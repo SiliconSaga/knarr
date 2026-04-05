@@ -1,0 +1,77 @@
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: knarr.messages.inbound
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: knarr-kafka-8r9tn
+spec:
+  partitions: 1
+  replicas: 1
+  config:
+    retention.ms: "604800000"
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: knarr.messages.outbound
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: knarr-kafka-8r9tn
+spec:
+  partitions: 1
+  replicas: 1
+  config:
+    retention.ms: "604800000"
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: knarr.watch.alerts
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: knarr-kafka-8r9tn
+spec:
+  partitions: 1
+  replicas: 1
+  config:
+    retention.ms: "604800000"
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: knarr.routing.pending
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: knarr-kafka-8r9tn
+spec:
+  partitions: 1
+  replicas: 1
+  config:
+    retention.ms: "604800000"
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: knarr.routing.decisions
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: knarr-kafka-8r9tn
+spec:
+  partitions: 1
+  replicas: 1
+  config:
+    retention.ms: "604800000"
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: knarr.content.draft
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: knarr-kafka-8r9tn
+spec:
+  partitions: 1
+  replicas: 1
+  config:
+    retention.ms: "604800000"

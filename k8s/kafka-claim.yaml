@@ -1,0 +1,10 @@
+apiVersion: mimir.siliconsaga.org/v1alpha1
+kind: KafkaCluster
+metadata:
+  name: knarr-kafka
+  namespace: knarr
+spec:
+  parameters:
+    replicas: 1
+    storageSize: "2Gi"
+    version: "4.0.0"
