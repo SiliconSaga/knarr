@@ -1,0 +1,38 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: knarr-watchers
+  namespace: knarr
+  labels:
+    app: knarr-watchers
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: knarr-watchers
+  template:
+    metadata:
+      labels:
+        app: knarr-watchers
+    spec:
+      containers:
+        - name: watchers
+          image: knarr-watchers:dev
+          imagePullPolicy: Never
+          env:
+            - name: KAFKA_BOOTSTRAP
+              value: "knarr-kafka-8r9tn-kafka-bootstrap.kafka.svc.cluster.local:9092"
+            - name: KAFKA_TOPIC
+              value: "knarr.watch.alerts"
+            - name: REDDIT_SUBREDDIT
+              value: "Terasology"
+            - name: GITHUB_REPOS
+              value: "MovingBlocks/Terasology"
+            - name: POLL_INTERVAL_SECONDS
+              value: "300"
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              memory: 128Mi

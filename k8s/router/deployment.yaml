@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: knarr-router
+  namespace: knarr
+  labels:
+    app: knarr-router
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: knarr-router
+  template:
+    metadata:
+      labels:
+        app: knarr-router
+    spec:
+      containers:
+        - name: router
+          image: knarr-router:dev
+          imagePullPolicy: Never
+          env:
+            - name: MATRIX_HOMESERVER
+              value: "http://synapse.knarr.svc.cluster.local:8008"
+            - name: MATRIX_USER
+              value: "@knarr-router:knarr.local"
+            - name: MATRIX_PASSWORD
+              value: "knarr-router-2026"
+            - name: MATRIX_ROOM_ID
+              value: "!LrnNosBcOicdlZbIoP:knarr.local"
+            - name: KAFKA_BOOTSTRAP
+              value: "knarr-kafka-8r9tn-kafka-bootstrap.kafka.svc.cluster.local:9092"
+            - name: KAFKA_TOPIC
+              value: "knarr.watch.alerts"
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
