@@ -1,0 +1,14 @@
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: synapse
+  namespace: knarr
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`matrix.knarr.local`)
+      kind: Rule
+      services:
+        - name: synapse
+          port: 8008

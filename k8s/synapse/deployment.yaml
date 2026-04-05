@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: synapse
+  namespace: knarr
+  labels:
+    app: synapse
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: synapse
+  template:
+    metadata:
+      labels:
+        app: synapse
+    spec:
+      containers:
+        - name: synapse
+          image: matrixdotorg/synapse:v1.122.0
+          ports:
+            - containerPort: 8008
+          volumeMounts:
+            - name: config
+              mountPath: /config
+            - name: signing-key
+              mountPath: /keys
+              readOnly: true
+            - name: data
+              mountPath: /data
+          env:
+            - name: SYNAPSE_CONFIG_DIR
+              value: /config
+            - name: SYNAPSE_CONFIG_PATH
+              value: /config/homeserver.yaml
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8008
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8008
+            initialDelaySeconds: 30
+            periodSeconds: 30
+      volumes:
+        - name: config
+          configMap:
+            name: synapse-config
+        - name: signing-key
+          secret:
+            secretName: synapse-signing-key
+        - name: data
+          emptyDir: {}

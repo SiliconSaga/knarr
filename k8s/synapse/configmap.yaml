@@ -1,0 +1,52 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: synapse-config
+  namespace: knarr
+data:
+  homeserver.yaml: |
+    server_name: "knarr.local"
+    pid_file: "/data/homeserver.pid"
+    listeners:
+      - port: 8008
+        tls: false
+        type: http
+        x_forwarded: true
+        resources:
+          - names: [client, federation]
+            compress: false
+    database:
+      name: psycopg2
+      allow_unsafe_locale: true
+      args:
+        user: "synapse"
+        password: "HcL.}NIx,{8JS5jVk:jX=||:"
+        database: "synapse"
+        host: "synapse-db-primary.knarr.svc"
+        port: "5432"
+        cp_min: 2
+        cp_max: 5
+    signing_key_path: "/keys/signing.key"
+    suppress_key_server_warning: true
+    enable_registration: false
+    registration_shared_secret: "dMxdYybanbwhOQZ5TjeJ3koWwRNZazcutTdYMMHDKKc"
+    federation_domain_whitelist: []
+    allow_public_rooms_over_federation: false
+    media_store_path: "/data/media_store"
+    log_config: "/config/log.yaml"
+    report_stats: false
+    trusted_key_servers: []
+    app_service_config_files: []
+
+  log.yaml: |
+    version: 1
+    formatters:
+      precise:
+        format: '%(asctime)s - %(name)s - %(lineno)d - %(levelname)s - %(message)s'
+    handlers:
+      console:
+        class: logging.StreamHandler
+        formatter: precise
+    root:
+      level: INFO
+      handlers: [console]
