@@ -29,13 +29,14 @@ WhatsApp ←→ mautrix-whatsapp ←→ Synapse    (Phase 2)
 | Router Bot | `knarr-router:dev` | Consumes Kafka alerts, posts to Matrix rooms |
 | Watchers | `knarr-watchers:dev` | Polls Reddit/GitHub, publishes to Kafka |
 | mautrix-discord | *(not yet deployed)* | Bridges Discord ↔ Matrix |
+| Kafka UI | `provectuslabs/kafka-ui:v0.7.2` | Web dashboard for browsing topics/messages |
 
 ## Prerequisites
 
 - `k3d-nordri-test` cluster running (or equivalent k3s/k8s)
 - Crossplane compositions: `xpostgresql-percona`, `xkafkacluster-strimzi`
 - Strimzi operator in `kafka` namespace, Percona PG operator in `percona` namespace
-- `/etc/hosts` entry: `192.168.97.2 matrix.knarr.local` (adjust IP for your Traefik LB)
+- `/etc/hosts` entries: `192.168.97.2 matrix.knarr.local kafka-ui.knarr.local` (adjust IP for your Traefik LB)
 
 ## Deploy from Scratch
 
@@ -88,6 +89,10 @@ kubectl exec -n knarr deploy/synapse -- register_new_matrix_user \
 # 10. Update k8s/router/deployment.yaml with room ID and credentials, then:
 kubectl apply -f k8s/watchers/
 kubectl apply -f k8s/router/
+
+# 11. Kafka UI (optional but recommended)
+kubectl apply -f k8s/kafka-ui/
+# Open http://kafka-ui.knarr.local (needs /etc/hosts entry)
 ```
 
 ## Operations
@@ -108,27 +113,62 @@ kubectl logs -n knarr -l app=knarr-router --tail=20
 kubectl logs -n knarr -l app=synapse --tail=20
 ```
 
-### Kafka Operations
+### Kafka UI (Web Dashboard)
+
+The easiest way to inspect Kafka. Requires `/etc/hosts` entry:
+`192.168.97.2 kafka-ui.knarr.local` (same IP as Matrix).
 
 ```bash
-# Read recent messages from watch.alerts
-kubectl exec -n kafka knarr-kafka-8r9tn-knarr-kafka-8r9tn-combined-0 -- \
-  bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 \
-  --topic knarr.watch.alerts --from-beginning --max-messages 5 --timeout-ms 5000
+# Deploy (one-time)
+kubectl apply -f k8s/kafka-ui/
+
+# Then open in browser
+open http://kafka-ui.knarr.local
+```
+
+From the UI you can:
+- **Topics** → click `knarr.watch.alerts` → **Messages** tab to browse all events with formatted JSON
+- **Topics** → any topic → **Produce Message** to send a test event
+- **Consumers** → `knarr-router` group to check offset lag (is the router keeping up?)
+- **Dashboard** for cluster overview
+
+### Kafka CLI (kcat)
+
+For scripting or quick terminal checks, `kcat` talks directly to Kafka via port-forward:
+
+```bash
+brew install kcat
+
+# Port-forward Kafka (background, keep open while using kcat)
+kubectl port-forward -n kafka svc/knarr-kafka-8r9tn-kafka-bootstrap 9092:9092 &
+
+# List topics
+kcat -b localhost:9092 -L
+
+# Read all messages from watch.alerts, formatted
+kcat -b localhost:9092 -t knarr.watch.alerts -C -e -J | python3 -m json.tool
+
+# Read just the last 3 messages
+kcat -b localhost:9092 -t knarr.watch.alerts -C -o -3 -e
+
+# Publish a test alert
+echo '{"event_id":"test","timestamp":"2026-04-05T00:00:00Z","source":{"platform":"test","channel":"manual","community":"terasology"},"content":{"type":"test","body":"Manual test alert","url":null}}' | \
+  kcat -b localhost:9092 -t knarr.watch.alerts -P
+
+# Kill the port-forward when done
+kill %1
+```
+
+### Kafka via kubectl (fallback)
+
+```bash
+# List all Knarr topics
+kubectl get kafkatopics -n kafka | grep knarr
 
 # Check router consumer group lag
 kubectl exec -n kafka knarr-kafka-8r9tn-knarr-kafka-8r9tn-combined-0 -- \
   bin/kafka-consumer-groups.sh --bootstrap-server localhost:9092 \
   --describe --group knarr-router
-
-# Publish a test alert manually
-echo '{"event_id":"test","timestamp":"2026-04-05T00:00:00Z","source":{"platform":"test","channel":"manual","community":"terasology"},"content":{"type":"test","body":"Manual test alert","url":null}}' | \
-  kubectl exec -i -n kafka knarr-kafka-8r9tn-knarr-kafka-8r9tn-combined-0 -- \
-  bin/kafka-console-producer.sh --bootstrap-server localhost:9092 \
-  --topic knarr.watch.alerts
-
-# List all Knarr topics
-kubectl get kafkatopics -n kafka | grep knarr
 ```
 
 ### Matrix Client Access
