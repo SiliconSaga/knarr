@@ -288,7 +288,169 @@ with `bot` as the first argument.
 
 Fix: Use `login-token bot <token>` instead.
 
+## Identity and Mention Mapping
+
+Understanding how Discord and Matrix identities map to each other helps set
+expectations and troubleshoot mention behavior.
+
+### Discord → Matrix (single puppeting, automatic)
+
+When any Discord user posts in a bridged channel, mautrix-discord creates a
+"puppet" Matrix user for them automatically:
+
+- Discord user `Cervator` (ID `12345`) speaks →
+- Bridge creates `@discord_12345:knarr.local` with Cervator's display name and
+  avatar synced from Discord →
+- Message appears in the Matrix room as that puppet
+
+No configuration or user action required. Puppets update when Discord profiles
+change.
+
+### Matrix → Discord (webhook mode)
+
+Matrix messages are forwarded to Discord via webhooks when the bot has
+`Manage Webhooks` permission and the bridge config has:
+
+```yaml
+prefix_webhook_messages: true
+enable_webhook_avatars: true
+```
+
+A Matrix user named `Bob` posting in a bridged room appears on Discord as
+"Bob" with Bob's Matrix avatar — but with a small "APP" or "Webhook" badge
+next to the name. Close to native but visually distinct.
+
+Alternative: without webhook permission, all Matrix messages appear from the
+bot account prefixed with the sender's name, like `[Bob] Hello there`.
+
+### Mention translation
+
+| Direction | Behavior |
+|-----------|----------|
+| Discord user mentions another Discord user | Works natively — mention arrives in Matrix as a proper mention of that user's puppet |
+| Discord user mentions a Matrix-only user | Matrix users don't have Discord IDs, so @-mentions can't target them from Discord. Text appears as plain text on both sides. |
+| Discord user mentions `@<BotName>` (the bridge bot) | Resolves to the **Matrix user that logged the bridge in** (see below) |
+| Matrix user mentions a Discord user | Bridge translates Matrix mention of the puppet to a native Discord mention — Discord user gets pinged properly |
+| Matrix user mentions a Matrix-only user in a bridged room | Appears as plain text on Discord (no ping) |
+
+### The "bridge bot" identity
+
+When you run `login-token bot <token>`, the Matrix user who sends that command
+becomes the "owner" of the Discord connection. From then on:
+
+- The Discord bot account (`@YourBotName` on Discord) corresponds to that
+  Matrix user
+- When anyone on Discord pings the bot, the Matrix-side mention resolves to
+  that owner user
+- The bot appears in Discord messages as a normal bot account
+
+**Recommendation: use a dedicated Matrix user for the bridge login**, separate
+from your `admin` account. This avoids cross-wiring Discord pings of the bot
+with your admin account.
+
+Knarr's convention:
+
+- Create `@knarr:knarr.local` (non-admin Matrix user, password stored
+  securely, the Knarr avatar applied)
+- Log the bridge in from `@knarr`'s management DM
+- Now `@YourBotName` on Discord ↔ `@knarr:knarr.local` on Matrix
+
+### Bridge permissions
+
+The bridge config's `permissions` block controls who can run admin commands:
+
+```yaml
+permissions:
+  "*": relay
+  "knarr.local": user
+  "@knarr:knarr.local": admin
+  "@admin:knarr.local": admin
+```
+
+- `relay` — can see bridged messages (default for everyone)
+- `user` — can be bridged to Discord, use basic commands
+- `admin` — can run destructive/administrative bridge commands
+
+Grant `admin` to the bridge's operator user(s). Regular community members only
+need `user`.
+
+### Double puppeting (optional, advanced)
+
+By default, Matrix users show on Discord as webhooks. For a true "native
+Discord user" appearance, a Matrix user can supply their own Discord token to
+the bridge — the bridge then posts their messages as that Discord user
+natively. Requires the user to:
+
+1. Extract their own Discord user token from the Discord client
+2. Run `login-token user <their-token>` in a DM with the bridge
+
+Trade-offs: gives the cleanest bridging experience, but Discord considers
+self-bots a TOS gray area. Use at your own risk, and only for dedicated power
+users.
+
+Knarr's default stance: bot mode only. Double puppeting is available for
+power users who want it and accept the trade-offs.
+
+## Persistent Storage (PVC)
+
+**The bridge requires a PersistentVolumeClaim for its SQLite database.** Using
+an `emptyDir` volume will lose all bridge state on every pod restart:
+
+- Discord login (must re-run `login-token bot <token>`)
+- Bridged channel mappings (must re-run `!discord bridge <channel-id>`)
+- Puppet user state for all Discord users seen
+
+The shipped deployment manifest (`k8s/bridges/discord/deployment.yaml`) uses
+a 1Gi PVC for `/data`. Verify after deploying:
+
+```bash
+kubectl get pvc -n knarr mautrix-discord-data
+```
+
+Should show `STATUS: Bound`.
+
+If you see the bridge re-initializing schemas from version 0 after a restart,
+the PVC is not being used. Check the deployment's `volumes` section.
+
+**Management rooms are stored in the bridge's DB, not Synapse's.** If the DB
+is wiped (via emptyDir replacement or manual intervention), existing
+management rooms become "unknown" to the bridge and need to be recreated. The
+bridge can't retroactively discover rooms — create a fresh DM to establish a
+new management room.
+
+## Synapse Rate Limits
+
+Synapse's default rate limits are calibrated for public servers defending
+against abuse. For a private homeserver running operational flows (admin
+actions, bridge logins, repeated API calls during development), they're too
+aggressive.
+
+Relaxed settings in the Synapse homeserver.yaml:
+
+```yaml
+rc_login:
+  address:
+    per_second: 10
+    burst_count: 50
+  account:
+    per_second: 10
+    burst_count: 50
+  failed_attempts:
+    per_second: 1
+    burst_count: 10
+rc_message:
+  per_second: 100
+  burst_count: 200
+rc_admin_redaction:
+  per_second: 100
+  burst_count: 200
+```
+
+These are safe for a private homeserver with federation disabled. Revisit if
+opening to federation or external users.
+
 ## References
 
 - mautrix-discord docs: https://docs.mau.fi/bridges/go/discord/
 - Discord developer portal: https://discord.com/developers/applications
+- Matrix Application Service API: https://spec.matrix.org/latest/application-service-api/

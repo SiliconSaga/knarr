@@ -38,6 +38,25 @@ data:
     trusted_key_servers: []
     app_service_config_files:
       - /bridges/discord/registration.yaml
+    # Relaxed rate limits — private homeserver, no public exposure.
+    # Defaults are tuned for public servers guarding against abuse, way too
+    # aggressive for operational/testing flows with admin + bridge logins.
+    rc_login:
+      address:
+        per_second: 10
+        burst_count: 50
+      account:
+        per_second: 10
+        burst_count: 50
+      failed_attempts:
+        per_second: 1
+        burst_count: 10
+    rc_message:
+      per_second: 100
+      burst_count: 200
+    rc_admin_redaction:
+      per_second: 100
+      burst_count: 200
 
   log.yaml: |
     version: 1

@@ -60,7 +60,20 @@ spec:
           configMap:
             name: mautrix-discord-config
         - name: data
-          emptyDir: {}
+          persistentVolumeClaim:
+            claimName: mautrix-discord-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mautrix-discord-data
+  namespace: knarr
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
 ---
 apiVersion: v1
 kind: Service
