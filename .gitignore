@@ -5,3 +5,10 @@ __pycache__/
 dist/
 build/
 .env
+
+# macOS
+.DS_Store
+
+# local experiments / screenshots / scratch
+Screenshot*.png
+*.scratch
