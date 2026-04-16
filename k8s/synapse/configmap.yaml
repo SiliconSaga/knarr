@@ -36,7 +36,8 @@ data:
     log_config: "/config/log.yaml"
     report_stats: false
     trusted_key_servers: []
-    app_service_config_files: []
+    app_service_config_files:
+      - /bridges/discord/registration.yaml
 
   log.yaml: |
     version: 1

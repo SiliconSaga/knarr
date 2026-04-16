@@ -1,0 +1,75 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mautrix-discord
+  namespace: knarr
+  labels:
+    app: mautrix-discord
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: mautrix-discord
+  template:
+    metadata:
+      labels:
+        app: mautrix-discord
+    spec:
+      securityContext:
+        fsGroup: 1337
+        runAsUser: 1337
+        runAsGroup: 1337
+      initContainers:
+        - name: copy-config
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - cp /config-readonly/config.yaml /data/config.yaml && chown 1337:1337 /data/config.yaml && chmod 600 /data/config.yaml
+          volumeMounts:
+            - name: config-readonly
+              mountPath: /config-readonly
+            - name: data
+              mountPath: /data
+          securityContext:
+            runAsUser: 0
+      containers:
+        - name: mautrix-discord
+          image: dock.mau.dev/mautrix/discord:v0.7.2
+          ports:
+            - containerPort: 29334
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          workingDir: /data
+          command:
+            - /usr/bin/mautrix-discord
+          args:
+            - -c
+            - /data/config.yaml
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+      volumes:
+        - name: config-readonly
+          configMap:
+            name: mautrix-discord-config
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mautrix-discord
+  namespace: knarr
+spec:
+  selector:
+    app: mautrix-discord
+  ports:
+    - port: 29334
+      targetPort: 29334

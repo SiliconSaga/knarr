@@ -1,0 +1,26 @@
+# Template for mautrix-discord appservice registration.
+# Substitute REPLACE_AS_TOKEN and REPLACE_HS_TOKEN with tokens generated via:
+#   python3 -c "import secrets; print(secrets.token_hex(32))"
+# Use the SAME tokens in the bridge's config.yaml (see config.template.yaml).
+#
+# IMPORTANT: The regex fields must use SINGLE quotes, not double quotes.
+# YAML double-quoted strings interpret \. as an invalid escape sequence and
+# will crash Synapse on startup.
+#
+# Do NOT commit real tokens. Create the Secret via:
+#   kubectl create secret generic discord-bridge-registration \
+#     -n knarr --from-file=registration.yaml=<rendered.yaml>
+
+id: discord
+url: http://mautrix-discord.knarr.svc.cluster.local:29334
+as_token: "REPLACE_AS_TOKEN"
+hs_token: "REPLACE_HS_TOKEN"
+sender_localpart: discordbot
+rate_limited: false
+namespaces:
+  users:
+    - regex: '@discord_.*:knarr\.local'
+      exclusive: true
+  aliases:
+    - regex: '#discord_.*:knarr\.local'
+      exclusive: true

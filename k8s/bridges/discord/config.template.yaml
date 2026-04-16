@@ -1,0 +1,86 @@
+# Template for mautrix-discord config.yaml
+# Substitute REPLACE_AS_TOKEN and REPLACE_HS_TOKEN with tokens generated via:
+#   python3 -c "import secrets; print(secrets.token_hex(32))"
+# Use these same tokens in the registration.yaml (see registration.template.yaml).
+#
+# Do NOT commit real tokens. Create the ConfigMap via:
+#   kubectl create configmap mautrix-discord-config -n knarr --from-file=config.yaml=<rendered.yaml>
+
+homeserver:
+  address: http://synapse.knarr.svc.cluster.local:8008
+  domain: knarr.local
+  software: standard
+  status_endpoint: null
+  message_send_checkpoint_endpoint: null
+  async_media: false
+
+appservice:
+  address: http://mautrix-discord.knarr.svc.cluster.local:29334
+  hostname: 0.0.0.0
+  port: 29334
+  database:
+    type: sqlite3-fk-wal
+    uri: file:/data/mautrix-discord.db?_txlock=immediate
+    max_open_conns: 1
+    max_idle_conns: 1
+  id: discord
+  bot:
+    username: discordbot
+    displayname: Discord Bridge Bot
+    avatar: mxc://maunium.net/nIdEykemnwdisvHbpxflpDlC
+  as_token: "REPLACE_AS_TOKEN"
+  hs_token: "REPLACE_HS_TOKEN"
+
+bridge:
+  username_template: "discord_{{.}}"
+  displayname_template: "{{or .GlobalName .Username}}{{if .Bot}} (bot){{end}}"
+  channel_name_template: "{{if .Guild.Name}}{{.Guild.Name}} - {{end}}{{if .Category.Name}}{{.Category.Name}} - {{end}}{{.Name}}"
+  private_chat_portal_meta: true
+  portal_message_buffer: 128
+  delivery_receipts: false
+  message_status_events: false
+  message_error_notices: true
+  restricted_rooms: false
+  autojoin_thread_on_open: false
+  embed_fields_as_tables: true
+  mute_channels_on_create: false
+  sync_direct_chat_list: false
+  resend_bridge_info: false
+  custom_emoji_reactions: true
+  delete_portal_on_channel_delete: false
+  delete_guild_on_leave: true
+  federate_rooms: false
+  prefix_webhook_messages: true
+  enable_webhook_avatars: true
+  use_discord_cdn_upload: true
+  cache_media: "unencrypted"
+  direct_media:
+    enabled: false
+  animated_sticker:
+    target: disable
+    args:
+      width: 320
+      height: 320
+      fps: 25
+  command_prefix: "!discord"
+  management_room_text:
+    welcome: "Hello, I'm the Discord bridge bot."
+    welcome_connected: "Use `help` for help."
+    welcome_unconnected: "Use `help` for help, or `login-qr` / `login-token` to log in."
+  encryption:
+    allow: false
+    default: false
+    require: false
+  provisioning:
+    prefix: /_matrix/provision
+    shared_secret: generate
+  permissions:
+    "*": relay
+    "knarr.local": user
+    "@admin:knarr.local": admin
+
+logging:
+  min_level: info
+  writers:
+    - type: stdout
+      format: pretty-colored

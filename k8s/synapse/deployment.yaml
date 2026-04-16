@@ -28,6 +28,9 @@ spec:
               readOnly: true
             - name: data
               mountPath: /data
+            - name: discord-bridge-reg
+              mountPath: /bridges/discord
+              readOnly: true
           env:
             - name: SYNAPSE_CONFIG_DIR
               value: /config
@@ -60,3 +63,6 @@ spec:
             secretName: synapse-signing-key
         - name: data
           emptyDir: {}
+        - name: discord-bridge-reg
+          secret:
+            secretName: discord-bridge-registration
