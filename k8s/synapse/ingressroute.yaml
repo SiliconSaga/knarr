@@ -7,7 +7,7 @@ spec:
   entryPoints:
     - web
   routes:
-    - match: Host(`matrix.knarr.local`)
+    - match: Host(`matrix.knarr.local`) || Host(`100.69.239.116`) || PathPrefix(`/_matrix`) || PathPrefix(`/health`)
       kind: Rule
       services:
         - name: synapse

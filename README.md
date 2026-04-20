@@ -10,6 +10,7 @@ between platform ports, knowing the routes (routing rules), and keeping a manife
 Design spec: [knarr-design.md](../../docs/plans/2026-04-02-knarr-design.md)
 Architecture: [architecture.md](docs/architecture.md)
 Discord bridge setup: [discord-bridge-setup.md](docs/discord-bridge-setup.md)
+Tailscale (remote access): [tailscale-setup.md](docs/tailscale-setup.md)
 
 ## Architecture
 
