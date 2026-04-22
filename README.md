@@ -1,6 +1,6 @@
 # Knarr
 
-<img src="docs/knarr-banner.png" alt="Knarr — integration hub" width="700">
+<img src="docs/knarr-banner.png" alt="Knarr — integration hub" width="100%">
 
 Integration/bridging layer for the Yggdrasil ecosystem. Self-hosted Matrix
 homeserver with bridges, Kafka event bus, and platform watchers.
@@ -17,7 +17,7 @@ between platform ports, knowing the routes (routing rules), and keeping a manife
 | [CLI Usage](docs/cli-usage.md) | Operational CLI and Python library for room/user/bridge management |
 | [Discord Bridge Setup](docs/discord-bridge-setup.md) | mautrix-discord setup, identity mapping, troubleshooting |
 | [Tailscale Setup](docs/tailscale-setup.md) | Remote access via Tailscale Serve for phone/off-LAN |
-| [Design Spec](../../docs/plans/2026-04-02-knarr-design.md) | Full design: identity model, routing, federation, future explorations |
+| Design Spec | Full design in the yggdrasil workspace: `docs/plans/2026-04-02-knarr-design.md` |
 
 ## Architecture
 

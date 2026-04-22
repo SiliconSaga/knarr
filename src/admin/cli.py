@@ -174,11 +174,15 @@ def bridge():
 
 
 @bridge.command("login-bot")
-@click.option("--token", envvar="DISCORD_TOKEN", help="Discord bot token (or set DISCORD_TOKEN)")
-def bridge_login_bot(token):
-    """Log the bridge into Discord with a bot token."""
+def bridge_login_bot():
+    """Log the bridge into Discord with a bot token.
+
+    Reads the token from DISCORD_TOKEN environment variable (set in knarr.env).
+    Never pass tokens as command-line arguments — they leak to shell history.
+    """
+    token = os.environ.get("DISCORD_TOKEN")
     if not token:
-        click.echo("Error: Provide --token or set DISCORD_TOKEN.", err=True)
+        click.echo("Error: Set DISCORD_TOKEN in knarr.env or environment.", err=True)
         sys.exit(1)
     mgr = get_bridge_manager()
     result = mgr.login_bot(token)
@@ -193,6 +197,12 @@ def bridge_login_bot(token):
 @click.option("--replace", is_flag=True, help="Replace existing bridge mapping")
 def bridge_channel(channel_id, room_name, room_id, invite, replace):
     """Bridge a Discord channel to a Matrix room."""
+    if room_name and room_id:
+        click.echo("Error: --room and --room-id are mutually exclusive.", err=True)
+        sys.exit(1)
+    if not room_name and not room_id:
+        click.echo("Error: Provide --room <name> to create a new room, or --room-id to bridge existing.", err=True)
+        sys.exit(1)
     mgr = get_bridge_manager()
     if room_name:
         result_room = mgr.create_and_bridge(
@@ -202,12 +212,9 @@ def bridge_channel(channel_id, room_name, room_id, invite, replace):
             replace=replace,
         )
         click.echo(f"Created and bridged: {result_room}")
-    elif room_id:
+    else:
         mgr.bridge_channel(room_id, channel_id, replace=replace)
         click.echo(f"Bridged {room_id} to Discord channel {channel_id}")
-    else:
-        click.echo("Error: Provide --room <name> to create a new room, or --room-id to bridge existing.", err=True)
-        sys.exit(1)
 
 
 @bridge.command("ping")

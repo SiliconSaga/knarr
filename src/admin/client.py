@@ -1,6 +1,9 @@
 """Matrix admin client for Knarr operational commands."""
 
+import os
 import time
+import uuid
+from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
 
@@ -36,6 +39,15 @@ class MatrixAdminClient:
 
     def _headers(self) -> dict:
         return {"Authorization": f"Bearer {self.get_token()}"}
+
+    def _authed_request(self, method: str, path: str, **kwargs) -> httpx.Response:
+        """Make an authenticated request, retrying once on 401 (stale token)."""
+        resp = self._http.request(method, self._api(path), headers=self._headers(), **kwargs)
+        if resp.status_code == 401:
+            self.invalidate_token()
+            resp = self._http.request(method, self._api(path), headers=self._headers(), **kwargs)
+        resp.raise_for_status()
+        return resp
 
     def get_token(self) -> str:
         if self._token is not None:
@@ -74,46 +86,34 @@ class MatrixAdminClient:
             body["invite"] = invite
         if direct:
             body["is_direct"] = True
-        resp = self._http.post(
-            self._api("/_matrix/client/v3/createRoom"),
-            headers=self._headers(),
-            json=body,
-        )
-        resp.raise_for_status()
+        resp = self._authed_request("POST", "/_matrix/client/v3/createRoom", json=body)
         return resp.json()["room_id"]
 
     def invite(self, room_id: str, user_id: str) -> None:
-        resp = self._http.post(
-            self._api(f"/_matrix/client/v3/rooms/{self._encode_room(room_id)}/invite"),
-            headers=self._headers(),
+        self._authed_request(
+            "POST",
+            f"/_matrix/client/v3/rooms/{self._encode_room(room_id)}/invite",
             json={"user_id": user_id},
         )
-        resp.raise_for_status()
 
     def send_message(self, room_id: str, body: str) -> str:
-        txn_id = str(int(time.time() * 1_000_000))
-        resp = self._http.put(
-            self._api(
-                f"/_matrix/client/v3/rooms/{self._encode_room(room_id)}"
-                f"/send/m.room.message/{txn_id}"
-            ),
-            headers=self._headers(),
+        txn_id = uuid.uuid4().hex
+        resp = self._authed_request(
+            "PUT",
+            f"/_matrix/client/v3/rooms/{self._encode_room(room_id)}"
+            f"/send/m.room.message/{txn_id}",
             json={"msgtype": "m.text", "body": body},
         )
-        resp.raise_for_status()
         return resp.json()["event_id"]
 
     def get_messages(
         self, room_id: str, limit: int = 10, direction: str = "b"
     ) -> list[dict]:
-        resp = self._http.get(
-            self._api(
-                f"/_matrix/client/v3/rooms/{self._encode_room(room_id)}/messages"
-            ),
-            headers=self._headers(),
+        resp = self._authed_request(
+            "GET",
+            f"/_matrix/client/v3/rooms/{self._encode_room(room_id)}/messages",
             params={"dir": direction, "limit": str(limit)},
         )
-        resp.raise_for_status()
         return [
             e for e in resp.json().get("chunk", [])
             if e.get("type") == "m.room.message"
@@ -122,18 +122,25 @@ class MatrixAdminClient:
     def register_user(
         self, username: str, password: str, admin: bool = False
     ) -> str:
+        nonce = self._get_register_nonce()
         resp = self._http.put(
             self._api("/_synapse/admin/v1/register"),
             headers=self._headers(),
             json={
-                "nonce": self._get_register_nonce(),
+                "nonce": nonce,
                 "username": username,
                 "password": password,
                 "admin": admin,
             },
         )
         if resp.status_code == 400 and "HMAC" in resp.text:
-            return self._register_via_shared_secret(username, password, admin)
+            raise NotImplementedError(
+                "Shared-secret registration requires the registration_shared_secret "
+                "from Synapse's config. Use the kubectl fallback:\n"
+                f"  kubectl exec -n knarr deploy/synapse -- register_new_matrix_user "
+                f"-c /config/homeserver.yaml -u {username} -p <password> "
+                f"{'--admin' if admin else '--no-admin'} http://localhost:8008"
+            )
         resp.raise_for_status()
         return resp.json()["user_id"]
 
@@ -145,51 +152,40 @@ class MatrixAdminClient:
         resp.raise_for_status()
         return resp.json()["nonce"]
 
-    def _register_via_shared_secret(
-        self, username: str, password: str, admin: bool
-    ) -> str:
-        import hashlib
-        import hmac
-
-        nonce = self._get_register_nonce()
-        # The shared secret is in Synapse's config — we can't easily get it
-        # from here. Fall back to the register_new_matrix_user CLI.
-        raise NotImplementedError(
-            "Shared-secret registration requires Synapse's registration_shared_secret. "
-            "Use 'kubectl exec' with register_new_matrix_user instead."
-        )
-
     def set_display_name(self, user_id: str, display_name: str) -> None:
-        resp = self._http.put(
-            self._api(f"/_matrix/client/v3/profile/{quote(user_id, safe='')}/displayname"),
-            headers=self._headers(),
+        self._authed_request(
+            "PUT",
+            f"/_matrix/client/v3/profile/{quote(user_id, safe='')}/displayname",
             json={"displayname": display_name},
         )
-        resp.raise_for_status()
 
     def set_avatar(self, user_id: str, avatar_path: str) -> None:
-        with open(avatar_path, "rb") as f:
-            image_data = f.read()
-        content_type = "image/png" if avatar_path.endswith(".png") else "image/jpeg"
-        resp = self._http.post(
-            self._api("/_matrix/media/v3/upload"),
+        path = Path(avatar_path)
+        suffix = path.suffix.lower()
+        content_types = {
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".gif": "image/gif",
+            ".webp": "image/webp",
+        }
+        content_type = content_types.get(suffix, "application/octet-stream")
+
+        resp = self._authed_request(
+            "POST",
+            "/_matrix/media/v3/upload",
+            params={"filename": path.name},
+            content=path.read_bytes(),
             headers={**self._headers(), "Content-Type": content_type},
-            params={"filename": avatar_path.split("/")[-1]},
-            content=image_data,
         )
-        resp.raise_for_status()
         mxc_uri = resp.json()["content_uri"]
 
-        self._http.put(
-            self._api(f"/_matrix/client/v3/profile/{quote(user_id, safe='')}/avatar_url"),
-            headers=self._headers(),
+        self._authed_request(
+            "PUT",
+            f"/_matrix/client/v3/profile/{quote(user_id, safe='')}/avatar_url",
             json={"avatar_url": mxc_uri},
         )
 
-    def get_joined_rooms(self) -> list[dict]:
-        resp = self._http.get(
-            self._api("/_matrix/client/v3/joined_rooms"),
-            headers=self._headers(),
-        )
-        resp.raise_for_status()
+    def get_joined_rooms(self) -> list[str]:
+        resp = self._authed_request("GET", "/_matrix/client/v3/joined_rooms")
         return resp.json().get("joined_rooms", [])

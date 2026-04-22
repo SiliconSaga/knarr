@@ -226,7 +226,7 @@ If re-bridging a channel that was previously bridged to a different room:
 !discord bridge --replace 1234567890123456789
 ```
 
-### 9. Create the Relay Webhook
+## 9. Create the Relay Webhook
 
 **This step is required for Matrix → Discord message delivery in bot mode.**
 Without it, only Discord → Matrix works. The bridge needs a Discord webhook

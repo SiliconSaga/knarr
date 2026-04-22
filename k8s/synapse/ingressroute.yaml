@@ -7,8 +7,19 @@ spec:
   entryPoints:
     - web
   routes:
-    - match: Host(`matrix.knarr.local`) || Host(`100.69.239.116`) || PathPrefix(`/_matrix`) || PathPrefix(`/health`)
+    # Primary: local hostname (requires /etc/hosts entry)
+    - match: Host(`matrix.knarr.local`)
       kind: Rule
+      services:
+        - name: synapse
+          port: 8008
+    # Fallback: route Matrix API paths regardless of Host header.
+    # Needed for Tailscale Serve and other proxies that don't preserve
+    # the original Host. Safe on a private homeserver where Synapse is
+    # the only HTTP service.
+    - match: PathPrefix(`/_matrix`) || Path(`/health`)
+      kind: Rule
+      priority: 1
       services:
         - name: synapse
           port: 8008
