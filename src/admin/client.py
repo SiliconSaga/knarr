@@ -123,42 +123,26 @@ class MatrixAdminClient:
         ]
 
     def register_user(
-        self, username: str, password: str, admin: bool = False
+        self,
+        username: str,
+        password: str,
+        admin: bool = False,
+        server_name: str = "knarr.local",
     ) -> str:
-        """Register a new user via Synapse admin API. Returns the user ID.
+        """Register a new user via Synapse v2 admin API. Returns the user ID.
 
-        Falls back to NotImplementedError with a kubectl command if the server
-        requires shared-secret HMAC registration.
+        Uses the bearer-token-authenticated endpoint (requires the calling
+        user to be a Synapse admin). The server_name parameter constructs
+        the full Matrix user ID (@username:server_name).
         """
-        nonce = self._get_register_nonce()
-        resp = self._http.put(
-            self._api("/_synapse/admin/v1/register"),
-            headers=self._headers(),
-            json={
-                "nonce": nonce,
-                "username": username,
-                "password": password,
-                "admin": admin,
-            },
+        user_id = f"@{username}:{server_name}"
+        encoded = quote(user_id, safe="")
+        resp = self._authed_request(
+            "PUT",
+            f"/_synapse/admin/v2/users/{encoded}",
+            json={"password": password, "admin": admin},
         )
-        if resp.status_code == 400 and "HMAC" in resp.text:
-            raise NotImplementedError(
-                "Shared-secret registration requires the registration_shared_secret "
-                "from Synapse's config. Use the kubectl fallback:\n"
-                f"  kubectl exec -n knarr deploy/synapse -- register_new_matrix_user "
-                f"-c /config/homeserver.yaml -u {username} -p <password> "
-                f"{'--admin' if admin else '--no-admin'} http://localhost:8008"
-            )
-        resp.raise_for_status()
-        return resp.json()["user_id"]
-
-    def _get_register_nonce(self) -> str:
-        resp = self._http.get(
-            self._api("/_synapse/admin/v1/register"),
-            headers=self._headers(),
-        )
-        resp.raise_for_status()
-        return resp.json()["nonce"]
+        return resp.json().get("name", user_id)
 
     def set_display_name(self, user_id: str, display_name: str) -> None:
         """Set a user's display name."""

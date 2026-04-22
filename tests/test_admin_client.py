@@ -120,21 +120,18 @@ def test_register_user():
     def capturing_handler(request: httpx.Request) -> httpx.Response:
         if "/login" in request.url.path:
             return httpx.Response(200, json={"access_token": "tok"})
-        if "/register" in request.url.path:
-            if request.method == "GET":
-                return httpx.Response(200, json={"nonce": "test_nonce_123"})
+        if "/_synapse/admin/v2/users/" in request.url.path:
             requests_seen.append(json.loads(request.content))
-            return httpx.Response(200, json={"user_id": "@newuser:test"})
+            return httpx.Response(200, json={"name": "@newuser:test"})
         return httpx.Response(404, json={})
 
     client = MatrixAdminClient("http://test:8008", "admin", "secret")
     client._http = httpx.Client(transport=httpx.MockTransport(capturing_handler))
 
-    user_id = client.register_user("newuser", "password123", admin=False)
+    user_id = client.register_user("newuser", "password123", admin=False, server_name="test")
     assert user_id == "@newuser:test"
-    assert requests_seen[0]["username"] == "newuser"
+    assert requests_seen[0]["password"] == "password123"
     assert requests_seen[0]["admin"] is False
-    assert requests_seen[0]["nonce"] == "test_nonce_123"
 
 
 def test_get_room_messages():
