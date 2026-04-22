@@ -5,6 +5,7 @@ __pycache__/
 dist/
 build/
 .env
+knarr.env
 
 # macOS
 .DS_Store

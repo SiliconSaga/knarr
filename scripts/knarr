@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# knarr — operational CLI for the Knarr Matrix integration hub
+#
+# Usage:
+#   knarr <command> [args...]
+#   knarr --help
+#
+# Configuration:
+#   Reads knarr.env from the component root (gitignored) for secrets.
+#   Override with environment variables:
+#     KNARR_HOMESERVER, KNARR_ADMIN_USER, KNARR_ADMIN_PASSWORD,
+#     KNARR_BRIDGE_USER, KNARR_BRIDGE_PASSWORD, KNARR_MANAGEMENT_ROOM,
+#     DISCORD_TOKEN
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+KNARR_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Source config if it exists
+if [[ -f "$KNARR_ROOT/knarr.env" ]]; then
+    set -a
+    source "$KNARR_ROOT/knarr.env"
+    set +a
+fi
+
+# Run the Python CLI from the component root
+cd "$KNARR_ROOT"
+exec python3 -m src.admin.cli "$@"
