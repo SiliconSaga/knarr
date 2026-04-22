@@ -1,5 +1,6 @@
 """Matrix admin client for Knarr operational commands."""
 
+import os
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -39,11 +40,16 @@ class MatrixAdminClient:
         return {"Authorization": f"Bearer {self.get_token()}"}
 
     def _authed_request(self, method: str, path: str, **kwargs) -> httpx.Response:
-        """Make an authenticated request, retrying once on 401 (stale token)."""
-        resp = self._http.request(method, self._api(path), headers=self._headers(), **kwargs)
+        """Make an authenticated request, retrying once on 401 (stale token).
+
+        Merges caller-supplied headers (e.g. Content-Type) with the auth header.
+        """
+        merged_headers = {**self._headers(), **(kwargs.pop("headers", None) or {})}
+        resp = self._http.request(method, self._api(path), headers=merged_headers, **kwargs)
         if resp.status_code == 401:
             self.invalidate_token()
-            resp = self._http.request(method, self._api(path), headers=self._headers(), **kwargs)
+            merged_headers = {**self._headers(), **(kwargs.pop("headers", None) or {})}
+            resp = self._http.request(method, self._api(path), headers=merged_headers, **kwargs)
         resp.raise_for_status()
         return resp
 
@@ -127,14 +133,19 @@ class MatrixAdminClient:
         username: str,
         password: str,
         admin: bool = False,
-        server_name: str = "knarr.local",
+        server_name: Optional[str] = None,
     ) -> str:
         """Register a new user via Synapse v2 admin API. Returns the user ID.
 
         Uses the bearer-token-authenticated endpoint (requires the calling
-        user to be a Synapse admin). The server_name parameter constructs
-        the full Matrix user ID (@username:server_name).
+        user to be a Synapse admin). Derives server_name from KNARR_SERVER_NAME
+        env var or the homeserver URL hostname if not provided.
         """
+        if server_name is None:
+            server_name = os.environ.get("KNARR_SERVER_NAME")
+        if server_name is None:
+            from urllib.parse import urlparse
+            server_name = urlparse(self.homeserver).hostname or "localhost"
         user_id = f"@{username}:{server_name}"
         encoded = quote(user_id, safe="")
         resp = self._authed_request(
@@ -170,7 +181,7 @@ class MatrixAdminClient:
             "/_matrix/media/v3/upload",
             params={"filename": path.name},
             content=path.read_bytes(),
-            headers={**self._headers(), "Content-Type": content_type},
+            headers={"Content-Type": content_type},
         )
         mxc_uri = resp.json()["content_uri"]
 

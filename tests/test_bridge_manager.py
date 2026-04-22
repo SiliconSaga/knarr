@@ -8,11 +8,18 @@ import pytest
 from src.admin.bridge import BridgeManager, DEFAULT_BRIDGE_BOT
 
 BOT = DEFAULT_BRIDGE_BOT
+FUTURE_TS = 9999999999999
 
 
 @pytest.fixture(autouse=True)
 def no_sleep():
     with patch("src.admin.bridge.time.sleep"):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def freeze_send_time():
+    with patch("src.admin.bridge.time.time", return_value=1000.0):
         yield
 
 
@@ -26,7 +33,7 @@ def mock_client():
 
 def bot_msg(body):
     """Helper to create a message dict from the bridge bot."""
-    return {"sender": BOT, "content": {"body": body}}
+    return {"sender": BOT, "content": {"body": body}, "origin_server_ts": FUTURE_TS}
 
 
 def test_login_bot_sends_command_to_management_room(mock_client):
@@ -136,7 +143,7 @@ def test_ping_sends_ping_command(mock_client):
 def test_ignores_non_bot_messages(mock_client):
     mock_client.send_message.return_value = "$evt1"
     mock_client.get_messages.return_value = [
-        {"sender": "@someuser:test", "content": {"body": "random chatter"}},
+        {"sender": "@someuser:test", "content": {"body": "random chatter"}, "origin_server_ts": FUTURE_TS},
         bot_msg("actual bridge response"),
     ]
 

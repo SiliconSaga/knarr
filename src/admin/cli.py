@@ -215,8 +215,10 @@ def bridge_channel(channel_id, room_name, room_id, invite, replace):
         if "WARNING" in bridge_result:
             click.echo(bridge_result, err=True)
     else:
-        mgr.bridge_channel(room_id, channel_id, replace=replace)
+        bridge_result = mgr.bridge_channel(room_id, channel_id, replace=replace)
         click.echo(f"Bridged {room_id} to Discord channel {channel_id}")
+        if "WARNING" in bridge_result:
+            click.echo(bridge_result, err=True)
 
 
 @bridge.command("ping")

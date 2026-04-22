@@ -9,7 +9,7 @@ The metaphor: Knarr is the merchant ship and its trade routes — carrying messa
 between platform ports, knowing the routes (routing rules), and keeping a manifest
 (Kafka event log). Autoboros is the crew — chatbots and content adaptation.
 
-### Documentation
+## Documentation
 
 | Doc | Description |
 |-----|-------------|

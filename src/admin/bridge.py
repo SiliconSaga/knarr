@@ -27,18 +27,26 @@ class BridgeManager:
 
     def _send_and_read(self, room_id: str, command: str, wait: float = COMMAND_WAIT_SECONDS) -> str:
         """Send a command to a room and return the bridge bot's first reply."""
+        send_ts = time.time() * 1000
         event_id = self.client.send_message(room_id, command)
         time.sleep(wait)
-        messages = self.client.get_messages(room_id, limit=10)
+        messages = self.client.get_messages(room_id, limit=25)
         # Collect only bridge bot responses that arrived after our command
         responses = []
+        found_sentinel = False
         for msg in messages:
             if msg.get("event_id") == event_id:
+                found_sentinel = True
+                break
+            msg_ts = msg.get("origin_server_ts", 0)
+            if msg_ts < send_ts:
                 break
             sender = msg.get("sender", "")
             body = msg.get("content", {}).get("body", "")
             if body and sender == self.bridge_bot_user:
                 responses.append(body)
+        if not found_sentinel and not responses:
+            return "(no response from bridge)"
         # responses is newest-first; return the oldest (chronologically first reply)
         return responses[-1] if responses else "(no response from bridge)"
 
