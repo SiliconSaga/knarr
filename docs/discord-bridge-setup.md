@@ -262,6 +262,8 @@ Send these in the management room (no prefix needed) or any room (prefix with
 - **logout** — disconnect from Discord
 - **ping** — check connection to Discord
 - **bridge \<channel_id\>** — bridge the current Matrix room to a Discord channel
+- **bridge --replace \<channel_id\>** — re-bridge a channel already bridged to another room
+- **set-relay --create** — create the relay webhook required for Matrix → Discord in bot mode
 - **unbridge** — unbridge the current room
 - **create-portal \<channel_id\>** — create a new Matrix room bridged to a channel
 - **guilds status** — list guilds the bot sees

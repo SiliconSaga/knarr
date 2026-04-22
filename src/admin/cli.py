@@ -205,13 +205,15 @@ def bridge_channel(channel_id, room_name, room_id, invite, replace):
         sys.exit(1)
     mgr = get_bridge_manager()
     if room_name:
-        result_room = mgr.create_and_bridge(
+        room_id, bridge_result = mgr.create_and_bridge(
             channel_id=channel_id,
             room_name=room_name,
             invite=list(invite) if invite else None,
             replace=replace,
         )
-        click.echo(f"Created and bridged: {result_room}")
+        click.echo(f"Created and bridged: {room_id}")
+        if "WARNING" in bridge_result:
+            click.echo(bridge_result, err=True)
     else:
         mgr.bridge_channel(room_id, channel_id, replace=replace)
         click.echo(f"Bridged {room_id} to Discord channel {channel_id}")

@@ -26,27 +26,31 @@ class BridgeManager:
         )
 
     def _send_and_read(self, room_id: str, command: str, wait: float = COMMAND_WAIT_SECONDS) -> str:
+        """Send a command to a room and return the bridge bot's first reply."""
         event_id = self.client.send_message(room_id, command)
         time.sleep(wait)
         messages = self.client.get_messages(room_id, limit=10)
-        # Find responses that came after our command (newer = first in backwards list)
+        # Collect only bridge bot responses that arrived after our command
         responses = []
         for msg in messages:
             if msg.get("event_id") == event_id:
                 break
-            body = msg.get("content", {}).get("body", "")
             sender = msg.get("sender", "")
-            if body and sender != self.client.admin_user:
+            body = msg.get("content", {}).get("body", "")
+            if body and sender == self.bridge_bot_user:
                 responses.append(body)
-        return responses[0] if responses else "(no response from bridge)"
+        # responses is newest-first; return the oldest (chronologically first reply)
+        return responses[-1] if responses else "(no response from bridge)"
 
     def login_bot(self, discord_token: str) -> str:
+        """Log the bridge into Discord using a bot token."""
         return self._send_and_read(
             self.management_room,
             f"login-token bot {discord_token}",
         )
 
     def ping(self) -> str:
+        """Check bridge connection to Discord."""
         return self._send_and_read(self.management_room, "ping")
 
     def bridge_channel(
@@ -55,6 +59,7 @@ class BridgeManager:
         channel_id: str,
         replace: bool = False,
     ) -> str:
+        """Bridge a Discord channel to a Matrix room and set up the relay webhook."""
         cmd = f"!discord bridge {'--replace ' if replace else ''}{channel_id}"
         bridge_result = self._send_and_read(room_id, cmd)
 
@@ -71,7 +76,11 @@ class BridgeManager:
         invite: Optional[list[str]] = None,
         topic: str = "",
         replace: bool = False,
-    ) -> str:
+    ) -> tuple[str, str]:
+        """Create a room and bridge it to a Discord channel.
+
+        Returns (room_id, bridge_result) so callers can inspect warnings.
+        """
         all_invites = [self.bridge_bot_user]
         if invite:
             all_invites.extend(invite)
@@ -83,9 +92,11 @@ class BridgeManager:
             private=True,
         )
 
+        # Wait for the bridge bot to accept the room invite before sending commands
         time.sleep(2)
-        self.bridge_channel(room_id, channel_id, replace=replace)
-        return room_id
+        bridge_result = self.bridge_channel(room_id, channel_id, replace=replace)
+        return room_id, bridge_result
 
     def logout(self) -> str:
+        """Disconnect the bridge from Discord."""
         return self._send_and_read(self.management_room, "logout")

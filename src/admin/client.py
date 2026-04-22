@@ -1,7 +1,5 @@
 """Matrix admin client for Knarr operational commands."""
 
-import os
-import time
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -14,7 +12,8 @@ class MatrixAdminClient:
     """Wraps the Matrix client-server API for admin/operational use.
 
     Handles token caching, room ID URL-encoding, and common operations
-    that would otherwise require multi-line curl incantations.
+    that would otherwise require multi-line curl incantations. Usable
+    from the CLI (src.admin.cli) or imported directly by services.
     """
 
     def __init__(
@@ -28,7 +27,6 @@ class MatrixAdminClient:
         self.admin_user = admin_user
         self.admin_password = admin_password
         self._token: Optional[str] = None
-        self._token_time: float = 0
         self._http = httpx.Client(timeout=timeout)
 
     def _api(self, path: str) -> str:
@@ -50,6 +48,7 @@ class MatrixAdminClient:
         return resp
 
     def get_token(self) -> str:
+        """Login and return an access token, caching it for subsequent calls."""
         if self._token is not None:
             return self._token
         resp = self._http.post(
@@ -62,10 +61,10 @@ class MatrixAdminClient:
         )
         resp.raise_for_status()
         self._token = resp.json()["access_token"]
-        self._token_time = time.monotonic()
         return self._token
 
     def invalidate_token(self):
+        """Clear the cached token, forcing a fresh login on next request."""
         self._token = None
 
     def create_room(
@@ -76,6 +75,7 @@ class MatrixAdminClient:
         private: bool = True,
         direct: bool = False,
     ) -> str:
+        """Create a Matrix room and return its room ID."""
         body: dict = {
             "name": name,
             "preset": "private_chat" if private else "public_chat",
@@ -90,6 +90,7 @@ class MatrixAdminClient:
         return resp.json()["room_id"]
 
     def invite(self, room_id: str, user_id: str) -> None:
+        """Invite a user to a room."""
         self._authed_request(
             "POST",
             f"/_matrix/client/v3/rooms/{self._encode_room(room_id)}/invite",
@@ -97,6 +98,7 @@ class MatrixAdminClient:
         )
 
     def send_message(self, room_id: str, body: str) -> str:
+        """Send a text message to a room. Returns the event ID."""
         txn_id = uuid.uuid4().hex
         resp = self._authed_request(
             "PUT",
@@ -109,6 +111,7 @@ class MatrixAdminClient:
     def get_messages(
         self, room_id: str, limit: int = 10, direction: str = "b"
     ) -> list[dict]:
+        """Fetch recent messages from a room. Returns newest-first by default."""
         resp = self._authed_request(
             "GET",
             f"/_matrix/client/v3/rooms/{self._encode_room(room_id)}/messages",
@@ -122,6 +125,11 @@ class MatrixAdminClient:
     def register_user(
         self, username: str, password: str, admin: bool = False
     ) -> str:
+        """Register a new user via Synapse admin API. Returns the user ID.
+
+        Falls back to NotImplementedError with a kubectl command if the server
+        requires shared-secret HMAC registration.
+        """
         nonce = self._get_register_nonce()
         resp = self._http.put(
             self._api("/_synapse/admin/v1/register"),
@@ -153,6 +161,7 @@ class MatrixAdminClient:
         return resp.json()["nonce"]
 
     def set_display_name(self, user_id: str, display_name: str) -> None:
+        """Set a user's display name."""
         self._authed_request(
             "PUT",
             f"/_matrix/client/v3/profile/{quote(user_id, safe='')}/displayname",
@@ -160,6 +169,7 @@ class MatrixAdminClient:
         )
 
     def set_avatar(self, user_id: str, avatar_path: str) -> None:
+        """Upload an image and set it as a user's avatar."""
         path = Path(avatar_path)
         suffix = path.suffix.lower()
         content_types = {
@@ -187,5 +197,6 @@ class MatrixAdminClient:
         )
 
     def get_joined_rooms(self) -> list[str]:
+        """List room IDs the authenticated user has joined."""
         resp = self._authed_request("GET", "/_matrix/client/v3/joined_rooms")
         return resp.json().get("joined_rooms", [])

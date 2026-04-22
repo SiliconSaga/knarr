@@ -220,8 +220,9 @@ kubectl rollout restart deploy/knarr-watchers deploy/knarr-router -n knarr
 python3 -m pytest tests/ -v
 ```
 
-8 tests covering event schemas, Reddit/GitHub watcher parsing and deduplication,
-and router message formatting.
+21 tests covering event schemas, Reddit/GitHub watcher parsing and deduplication,
+router message formatting, Matrix admin client operations, and Discord bridge
+manager command sequencing.
 
 ## Kafka Topics
 

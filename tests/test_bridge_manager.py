@@ -5,7 +5,9 @@ from unittest.mock import MagicMock, patch, call
 
 import pytest
 
-from src.admin.bridge import BridgeManager
+from src.admin.bridge import BridgeManager, DEFAULT_BRIDGE_BOT
+
+BOT = DEFAULT_BRIDGE_BOT
 
 
 @pytest.fixture(autouse=True)
@@ -18,14 +20,20 @@ def no_sleep():
 def mock_client():
     client = MagicMock()
     client.homeserver = "http://test:8008"
+    client.admin_user = "knarr"
     return client
+
+
+def bot_msg(body):
+    """Helper to create a message dict from the bridge bot."""
+    return {"sender": BOT, "content": {"body": body}}
 
 
 def test_login_bot_sends_command_to_management_room(mock_client):
     mock_client.send_message.return_value = "$evt1"
     mock_client.get_messages.return_value = [
-        {"content": {"body": "Successfully logged in as @Knarr"}},
-        {"content": {"body": "Connecting to Discord as user ID 12345"}},
+        bot_msg("Successfully logged in as @Knarr"),
+        bot_msg("Connecting to Discord as user ID 12345"),
     ]
 
     mgr = BridgeManager(mock_client, management_room="!mgmt:test")
@@ -34,7 +42,7 @@ def test_login_bot_sends_command_to_management_room(mock_client):
     mock_client.send_message.assert_called_once_with(
         "!mgmt:test", "login-token bot fake-discord-token"
     )
-    assert "Successfully logged in" in result
+    assert "Connecting to Discord" in result
 
 
 def test_bridge_channel_sends_command_and_sets_relay(mock_client):
@@ -46,8 +54,8 @@ def test_bridge_channel_sends_command_and_sets_relay(mock_client):
 
     mock_client.send_message.side_effect = track_sends
     mock_client.get_messages.side_effect = [
-        [{"content": {"body": "Room successfully bridged"}}],
-        [{"content": {"body": "Saved webhook mautrix (123) as portal relay webhook"}}],
+        [bot_msg("Room successfully bridged")],
+        [bot_msg("Saved webhook mautrix (123) as portal relay webhook")],
     ]
 
     mgr = BridgeManager(mock_client, management_room="!mgmt:test")
@@ -62,8 +70,8 @@ def test_bridge_channel_sends_command_and_sets_relay(mock_client):
 def test_bridge_channel_with_replace(mock_client):
     mock_client.send_message.return_value = "$evt1"
     mock_client.get_messages.side_effect = [
-        [{"content": {"body": "Room successfully bridged"}}],
-        [{"content": {"body": "Saved webhook"}}],
+        [bot_msg("Room successfully bridged")],
+        [bot_msg("Saved webhook")],
     ]
 
     mgr = BridgeManager(mock_client, management_room="!mgmt:test")
@@ -77,29 +85,45 @@ def test_create_and_bridge_creates_room_first(mock_client):
     mock_client.create_room.return_value = "!new:test"
     mock_client.send_message.return_value = "$evt1"
     mock_client.get_messages.side_effect = [
-        [{"content": {"body": "Room successfully bridged"}}],
-        [{"content": {"body": "Saved webhook"}}],
+        [bot_msg("Room successfully bridged")],
+        [bot_msg("Saved webhook")],
     ]
 
     mgr = BridgeManager(mock_client, management_room="!mgmt:test")
-    room_id = mgr.create_and_bridge(
+    room_id, bridge_result = mgr.create_and_bridge(
         channel_id="1342947610008485921",
         room_name="my-channel (Discord)",
         invite=["@cervator:test"],
     )
 
     assert room_id == "!new:test"
+    assert "bridged" in bridge_result.lower()
     mock_client.create_room.assert_called_once()
     create_kwargs = mock_client.create_room.call_args
-    assert "@discordbot:test" not in create_kwargs[1].get("invite", [])
-    # discordbot is invited via the invite param
     assert "@cervator:test" in create_kwargs[1]["invite"]
+
+
+def test_create_and_bridge_surfaces_relay_warning(mock_client):
+    mock_client.create_room.return_value = "!new:test"
+    mock_client.send_message.return_value = "$evt1"
+    mock_client.get_messages.side_effect = [
+        [bot_msg("Room successfully bridged")],
+        [bot_msg("(no response from bridge)")],
+    ]
+
+    mgr = BridgeManager(mock_client, management_room="!mgmt:test")
+    room_id, bridge_result = mgr.create_and_bridge(
+        channel_id="123",
+        room_name="test",
+    )
+
+    assert "WARNING" in bridge_result
 
 
 def test_ping_sends_ping_command(mock_client):
     mock_client.send_message.return_value = "$evt1"
     mock_client.get_messages.return_value = [
-        {"content": {"body": "logged in as @Knarr, connected to discord"}},
+        bot_msg("logged in as @Knarr, connected to discord"),
     ]
 
     mgr = BridgeManager(mock_client, management_room="!mgmt:test")
@@ -107,3 +131,16 @@ def test_ping_sends_ping_command(mock_client):
 
     mock_client.send_message.assert_called_once_with("!mgmt:test", "ping")
     assert "logged in" in result.lower() or "connected" in result.lower()
+
+
+def test_ignores_non_bot_messages(mock_client):
+    mock_client.send_message.return_value = "$evt1"
+    mock_client.get_messages.return_value = [
+        {"sender": "@someuser:test", "content": {"body": "random chatter"}},
+        bot_msg("actual bridge response"),
+    ]
+
+    mgr = BridgeManager(mock_client, management_room="!mgmt:test")
+    result = mgr.ping()
+
+    assert result == "actual bridge response"
