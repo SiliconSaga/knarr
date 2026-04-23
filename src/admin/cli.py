@@ -53,7 +53,6 @@ def get_bridge_manager() -> BridgeManager:
 @click.group()
 def cli():
     """Knarr — operational commands for Matrix homeserver and bridges."""
-    pass
 
 
 # --- Room commands ---
@@ -61,7 +60,6 @@ def cli():
 @cli.group()
 def room():
     """Matrix room operations."""
-    pass
 
 
 @room.command("create")
@@ -124,7 +122,6 @@ def room_list():
 @cli.group()
 def user():
     """Matrix user operations."""
-    pass
 
 
 @user.command("create")
@@ -175,7 +172,6 @@ def user_set_avatar(user_id, image_path):
 @cli.group()
 def bridge():
     """Discord bridge operations."""
-    pass
 
 
 @bridge.command("login-bot")

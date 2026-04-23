@@ -1,6 +1,5 @@
 """Tests for BridgeManager — verifies command sequencing without a live bridge."""
 
-import json
 from unittest.mock import MagicMock, patch, call
 
 import pytest
@@ -55,7 +54,7 @@ def test_login_bot_sends_command_to_management_room(mock_client):
 def test_bridge_channel_sends_command_and_sets_relay(mock_client):
     call_count = {"n": 0}
 
-    def track_sends(room_id, body):
+    def track_sends(_room_id: str, _body: str) -> str:
         call_count["n"] += 1
         return f"$evt{call_count['n']}"
 
