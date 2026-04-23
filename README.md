@@ -1,5 +1,7 @@
 # Knarr
 
+<img src="docs/knarr-banner.png" alt="Knarr — integration hub" width="100%">
+
 Integration/bridging layer for the Yggdrasil ecosystem. Self-hosted Matrix
 homeserver with bridges, Kafka event bus, and platform watchers.
 
@@ -7,9 +9,15 @@ The metaphor: Knarr is the merchant ship and its trade routes — carrying messa
 between platform ports, knowing the routes (routing rules), and keeping a manifest
 (Kafka event log). Autoboros is the crew — chatbots and content adaptation.
 
-Design spec: [knarr-design.md](../../docs/plans/2026-04-02-knarr-design.md)
-Architecture: [architecture.md](docs/architecture.md)
-Discord bridge setup: [discord-bridge-setup.md](docs/discord-bridge-setup.md)
+## Documentation
+
+| Doc | Description |
+|-----|-------------|
+| [Architecture](docs/architecture.md) | Two-plane design (Matrix + Kafka), data flows, testing strategies |
+| [CLI Usage](docs/cli-usage.md) | Operational CLI and Python library for room/user/bridge management |
+| [Discord Bridge Setup](docs/discord-bridge-setup.md) | mautrix-discord setup, identity mapping, troubleshooting |
+| [Tailscale Setup](docs/tailscale-setup.md) | Remote access via Tailscale Serve for phone/off-LAN |
+| Design Spec | Full design in the yggdrasil workspace: `docs/plans/2026-04-02-knarr-design.md` |
 
 ## Architecture
 
@@ -212,8 +220,9 @@ kubectl rollout restart deploy/knarr-watchers deploy/knarr-router -n knarr
 python3 -m pytest tests/ -v
 ```
 
-8 tests covering event schemas, Reddit/GitHub watcher parsing and deduplication,
-and router message formatting.
+21 tests covering event schemas, Reddit/GitHub watcher parsing and deduplication,
+router message formatting, Matrix admin client operations, and Discord bridge
+manager command sequencing.
 
 ## Kafka Topics
 

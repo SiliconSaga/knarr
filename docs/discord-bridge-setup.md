@@ -220,9 +220,37 @@ In the Matrix room you want to bridge (or a new one):
 
 Expected reply: "Room successfully bridged."
 
-Test by sending a message in Matrix — it should appear in Discord with the
-bot as the author. Test the reverse direction by sending in Discord — it
-should appear in Matrix.
+If re-bridging a channel that was previously bridged to a different room:
+
+```
+!discord bridge --replace 1234567890123456789
+```
+
+## 9. Create the Relay Webhook
+
+**This step is required for Matrix → Discord message delivery in bot mode.**
+Without it, only Discord → Matrix works. The bridge needs a Discord webhook
+to post messages with per-user attribution (sender name + avatar).
+
+In the bridged room, send:
+
+```
+!discord set-relay --create
+```
+
+Expected reply: "Saved webhook mautrix (...) as portal relay webhook"
+
+Now test both directions:
+- Send a message in the Matrix room → should appear on Discord via webhook
+- Send a message on Discord → should appear in the Matrix room as a puppet
+
+### Summary of Bridge Commands per Room
+
+For each Discord channel you bridge, run these in the Matrix room:
+
+1. Invite `@discordbot:knarr.local` to the room
+2. `!discord bridge <channel-id>` (or `--replace` if re-bridging)
+3. `!discord set-relay --create`
 
 ## Available Bridge Commands
 
@@ -234,6 +262,8 @@ Send these in the management room (no prefix needed) or any room (prefix with
 - **logout** — disconnect from Discord
 - **ping** — check connection to Discord
 - **bridge \<channel_id\>** — bridge the current Matrix room to a Discord channel
+- **bridge --replace \<channel_id\>** — re-bridge a channel already bridged to another room
+- **set-relay --create** — create the relay webhook required for Matrix → Discord in bot mode
 - **unbridge** — unbridge the current room
 - **create-portal \<channel_id\>** — create a new Matrix room bridged to a channel
 - **guilds status** — list guilds the bot sees
@@ -280,6 +310,19 @@ mounted read-only from a ConfigMap.
 Fix: Use an initContainer to copy the config from the ConfigMap to a
 writable volume before the bridge container starts. The deployment manifest
 does this via a busybox initContainer.
+
+### Discord → Matrix works but Matrix → Discord doesn't
+
+Symptom: Messages from Discord appear in Matrix, but Matrix messages are
+silently dropped. Bridge logs show: `"user is not logged in and portal
+doesn't have webhook"`
+
+Cause: In bot mode, the bridge needs a relay webhook to send messages to
+Discord. `!discord bridge` does NOT auto-create one.
+
+Fix: Run `!discord set-relay --create` in the bridged room. This creates a
+Discord webhook in the channel that the bridge uses for all Matrix→Discord
+messages.
 
 ### "Unknown command" when sending login-bot
 
