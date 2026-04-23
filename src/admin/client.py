@@ -44,11 +44,12 @@ class MatrixAdminClient:
 
         Merges caller-supplied headers (e.g. Content-Type) with the auth header.
         """
-        merged_headers = {**self._headers(), **(kwargs.pop("headers", None) or {})}
+        caller_headers = kwargs.pop("headers", None) or {}
+        merged_headers = {**self._headers(), **caller_headers}
         resp = self._http.request(method, self._api(path), headers=merged_headers, **kwargs)
         if resp.status_code == 401:
             self.invalidate_token()
-            merged_headers = {**self._headers(), **(kwargs.pop("headers", None) or {})}
+            merged_headers = {**self._headers(), **caller_headers}
             resp = self._http.request(method, self._api(path), headers=merged_headers, **kwargs)
         resp.raise_for_status()
         return resp
@@ -144,8 +145,10 @@ class MatrixAdminClient:
         if server_name is None:
             server_name = os.environ.get("KNARR_SERVER_NAME")
         if server_name is None:
-            from urllib.parse import urlparse
-            server_name = urlparse(self.homeserver).hostname or "localhost"
+            raise ValueError(
+                "server_name is required for user registration. "
+                "Set KNARR_SERVER_NAME in knarr.env or pass server_name explicitly."
+            )
         user_id = f"@{username}:{server_name}"
         encoded = quote(user_id, safe="")
         resp = self._authed_request(

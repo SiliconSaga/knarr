@@ -119,7 +119,7 @@ def test_create_and_bridge_surfaces_relay_warning(mock_client):
     ]
 
     mgr = BridgeManager(mock_client, management_room="!mgmt:test")
-    room_id, bridge_result = mgr.create_and_bridge(
+    _room_id, bridge_result = mgr.create_and_bridge(
         channel_id="123",
         room_name="test",
     )

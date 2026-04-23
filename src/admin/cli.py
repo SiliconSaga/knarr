@@ -133,16 +133,21 @@ def user():
 @click.option("--admin", "is_admin", is_flag=True, help="Grant admin privileges")
 def user_create(username, password, is_admin):
     """Create a Matrix user via Synapse admin API."""
+    import httpx
     client = get_client()
+    server_name = os.environ.get("KNARR_SERVER_NAME", "knarr.local")
     try:
-        user_id = client.register_user(username, password, admin=is_admin)
+        user_id = client.register_user(username, password, admin=is_admin, server_name=server_name)
         click.echo(f"Created: {user_id}")
-    except NotImplementedError as e:
-        click.echo(f"Note: {e}", err=True)
-        click.echo("Use: kubectl exec -n knarr deploy/synapse -- "
-                    f"register_new_matrix_user -c /config/homeserver.yaml "
-                    f"-u {username} -p <password> "
-                    f"{'--admin' if is_admin else '--no-admin'} http://localhost:8008")
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code in (401, 403):
+            click.echo(f"Admin API rejected request ({e.response.status_code}). Fallback:", err=True)
+            click.echo("kubectl exec -n knarr deploy/synapse -- "
+                       f"register_new_matrix_user -c /config/homeserver.yaml "
+                       f"-u {username} -p <password> "
+                       f"{'--admin' if is_admin else '--no-admin'} http://localhost:8008")
+        else:
+            raise
 
 
 @user.command("set-displayname")
