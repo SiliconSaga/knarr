@@ -261,18 +261,24 @@ def config_validate(config_path):
         click.echo(f"File not found: {e}", err=True)
         sys.exit(1)
 
-    space_count = sum(len(c.spaces) for c in cfg.communities)
-    room_count = 0
-    bridge_count = 0
-    watcher_count = 0
+    def _count_space(space):
+        s, r, b, w = 1, len(space.rooms), 0, 0
+        for room in space.rooms.values():
+            if room.bridge:
+                b += 1
+            if room.watchers:
+                w += len(room.watchers)
+        for child in space.children.values():
+            cs, cr, cb, cw = _count_space(child)
+            s += cs; r += cr; b += cb; w += cw
+        return s, r, b, w
+
+    space_count = room_count = bridge_count = watcher_count = 0
     for c in cfg.communities:
         for s in c.spaces.values():
-            room_count += len(s.rooms)
-            for r in s.rooms.values():
-                if r.bridge:
-                    bridge_count += 1
-                if r.watchers:
-                    watcher_count += len(r.watchers)
+            cs, cr, cb, cw = _count_space(s)
+            space_count += cs; room_count += cr
+            bridge_count += cb; watcher_count += cw
 
     click.echo(
         f"Config valid: {len(cfg.communities)} community, "

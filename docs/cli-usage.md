@@ -136,6 +136,25 @@ The `bridge-channel --room` command does three things in one call:
 2. Sends `!discord bridge <channel-id>` to bridge the room
 3. Sends `!discord set-relay --create` to enable Matrix-to-Discord messaging
 
+### Config Reconciliation
+
+```bash
+# Validate config syntax (no Matrix connection needed)
+knarr config validate [--config config/knarr.yaml]
+
+# Audit: dry-run, report what would change (exit code 2 if drift)
+knarr config audit [--config config/knarr.yaml]
+
+# Apply: converge live state to match config
+knarr config apply [--config config/knarr.yaml]
+```
+
+Config files live in `config/`:
+- `config/knarr.yaml` — index file (server name, users, secrets, community references)
+- `config/test.yaml` — per-community room topology, bridges, watchers
+
+See `docs/plans/2026-04-25-config-reconciler-design.md` for the full design.
+
 ### Utility
 
 ```bash

@@ -40,6 +40,7 @@ WhatsApp ←→ mautrix-whatsapp ←→ Synapse    (Phase 2)
 | Watchers | `knarr-watchers:dev` | Polls Reddit/GitHub, publishes to Kafka |
 | mautrix-discord | *(not yet deployed)* | Bridges Discord ↔ Matrix |
 | Kafka UI | `provectuslabs/kafka-ui:v0.7.2` | Web dashboard for browsing topics/messages |
+| Config Reconciler | Python (built-in) | Reads YAML config, diffs against Matrix state, applies changes |
 
 ## Prerequisites
 
