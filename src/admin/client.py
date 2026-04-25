@@ -198,3 +198,112 @@ class MatrixAdminClient:
         """List room IDs the authenticated user has joined."""
         resp = self._authed_request("GET", "/_matrix/client/v3/joined_rooms")
         return resp.json().get("joined_rooms", [])
+
+    def resolve_alias(self, alias: str) -> Optional[str]:
+        """Resolve a room alias to a room ID. Returns None if not found."""
+        encoded_alias = quote(alias, safe="")
+        try:
+            resp = self._authed_request(
+                "GET", f"/_matrix/client/v3/directory/room/{encoded_alias}"
+            )
+            return resp.json().get("room_id")
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                return None
+            raise
+
+    def get_room_state(self, room_id: str) -> dict:
+        """Read room state: name, topic, join_rule. Returns a flat dict."""
+        resp = self._authed_request(
+            "GET",
+            f"/_matrix/client/v3/rooms/{self._encode_room(room_id)}/state",
+        )
+        events = resp.json()
+        result = {}
+        for event in events:
+            if event["type"] == "m.room.name":
+                result["name"] = event["content"].get("name", "")
+            elif event["type"] == "m.room.topic":
+                result["topic"] = event["content"].get("topic", "")
+            elif event["type"] == "m.room.join_rules":
+                result["join_rule"] = event["content"].get("join_rule", "")
+            elif event["type"] == "m.room.create":
+                result["room_type"] = event["content"].get("type", "")
+        return result
+
+    def get_room_members(self, room_id: str) -> list[str]:
+        """List user IDs of current room members."""
+        resp = self._authed_request(
+            "GET",
+            f"/_matrix/client/v3/rooms/{self._encode_room(room_id)}/joined_members",
+        )
+        return list(resp.json().get("joined", {}).keys())
+
+    def set_room_alias(self, room_id: str, alias: str) -> None:
+        """Assign an alias to a room."""
+        encoded_alias = quote(alias, safe="")
+        self._authed_request(
+            "PUT",
+            f"/_matrix/client/v3/directory/room/{encoded_alias}",
+            json={"room_id": room_id},
+        )
+
+    def create_space(
+        self,
+        name: str,
+        alias: str = "",
+        topic: str = "",
+        invite: Optional[list[str]] = None,
+        private: bool = True,
+    ) -> str:
+        """Create a Matrix space (a room with m.space type). Returns room ID."""
+        body: dict = {
+            "name": name,
+            "preset": "private_chat" if private else "public_chat",
+            "creation_content": {"type": "m.space"},
+        }
+        if alias:
+            body["room_alias_name"] = alias
+        if topic:
+            body["topic"] = topic
+        if invite:
+            body["invite"] = invite
+        resp = self._authed_request("POST", "/_matrix/client/v3/createRoom", json=body)
+        return resp.json()["room_id"]
+
+    def add_space_child(self, space_id: str, child_id: str) -> None:
+        """Add a room or space as a child of a space."""
+        server = child_id.split(":")[1] if ":" in child_id else "localhost"
+        self._authed_request(
+            "PUT",
+            f"/_matrix/client/v3/rooms/{self._encode_room(space_id)}"
+            f"/state/m.space.child/{child_id}",
+            json={"via": [server]},
+        )
+
+    def set_room_state_event(
+        self, room_id: str, event_type: str, content: dict
+    ) -> None:
+        """Write a custom state event to a room."""
+        self._authed_request(
+            "PUT",
+            f"/_matrix/client/v3/rooms/{self._encode_room(room_id)}"
+            f"/state/{quote(event_type, safe='')}",
+            json=content,
+        )
+
+    def get_room_state_event(
+        self, room_id: str, event_type: str
+    ) -> Optional[dict]:
+        """Read a state event from a room. Returns None if not found."""
+        try:
+            resp = self._authed_request(
+                "GET",
+                f"/_matrix/client/v3/rooms/{self._encode_room(room_id)}"
+                f"/state/{quote(event_type, safe='')}",
+            )
+            return resp.json()
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code in (404, 403):
+                return None
+            raise

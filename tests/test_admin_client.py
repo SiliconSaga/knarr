@@ -152,3 +152,121 @@ def test_get_room_messages():
     messages = client.get_messages("!room:test", limit=5)
     assert len(messages) == 1
     assert messages[0]["content"]["body"] == "hello"
+
+
+def test_resolve_alias_returns_room_id():
+    client = make_client({
+        "/login": (200, {"access_token": "tok"}),
+        "/directory/room/": (200, {"room_id": "!found:test"}),
+    })
+    room_id = client.resolve_alias("#test:test")
+    assert room_id == "!found:test"
+
+
+def test_resolve_alias_returns_none_for_missing():
+    client = make_client({
+        "/login": (200, {"access_token": "tok"}),
+    })
+    room_id = client.resolve_alias("#missing:test")
+    assert room_id is None
+
+
+def test_get_room_state_returns_name_and_topic():
+    client = make_client({
+        "/login": (200, {"access_token": "tok"}),
+        "/state": (200, [
+            {"type": "m.room.name", "content": {"name": "My Room"}},
+            {"type": "m.room.topic", "content": {"topic": "A topic"}},
+            {"type": "m.room.join_rules", "content": {"join_rule": "invite"}},
+        ]),
+    })
+    state = client.get_room_state("!room:test")
+    assert state["name"] == "My Room"
+    assert state["topic"] == "A topic"
+    assert state["join_rule"] == "invite"
+
+
+def test_get_room_members():
+    client = make_client({
+        "/login": (200, {"access_token": "tok"}),
+        "/joined_members": (200, {
+            "joined": {
+                "@alice:test": {},
+                "@bob:test": {},
+            },
+        }),
+    })
+    members = client.get_room_members("!room:test")
+    assert sorted(members) == ["@alice:test", "@bob:test"]
+
+
+def test_set_room_alias():
+    client = make_client({
+        "/login": (200, {"access_token": "tok"}),
+        "/directory/room/": (200, {}),
+    })
+    client.set_room_alias("!room:test", "#myalias:test")
+
+
+def test_create_space_returns_room_id():
+    requests_seen = []
+
+    def capturing_handler(request: httpx.Request) -> httpx.Response:
+        if "/login" in request.url.path:
+            return httpx.Response(200, json={"access_token": "tok"})
+        if "/createRoom" in request.url.path:
+            requests_seen.append(json.loads(request.content))
+            return httpx.Response(200, json={"room_id": "!space:test"})
+        return httpx.Response(404, json={})
+
+    client = MatrixAdminClient("http://test:8008", "admin", "secret")
+    client._http = httpx.Client(transport=httpx.MockTransport(capturing_handler))
+
+    space_id = client.create_space("My Space", alias="myspace")
+    assert space_id == "!space:test"
+    body = requests_seen[0]
+    assert body["creation_content"]["type"] == "m.space"
+    assert "myspace" in body.get("room_alias_name", "")
+
+
+def test_add_space_child():
+    requests_seen = []
+
+    def capturing_handler(request: httpx.Request) -> httpx.Response:
+        if "/login" in request.url.path:
+            return httpx.Response(200, json={"access_token": "tok"})
+        if "/state/m.space.child" in request.url.path:
+            requests_seen.append(json.loads(request.content))
+            return httpx.Response(200, json={"event_id": "$evt"})
+        return httpx.Response(404, json={})
+
+    client = MatrixAdminClient("http://test:8008", "admin", "secret")
+    client._http = httpx.Client(transport=httpx.MockTransport(capturing_handler))
+
+    client.add_space_child("!space:test", "!child:test")
+    assert requests_seen[0]["via"] == ["test"]
+
+
+def test_set_room_state_event():
+    client = make_client({
+        "/login": (200, {"access_token": "tok"}),
+        "/state/org.knarr.managed": (200, {"event_id": "$evt"}),
+    })
+    client.set_room_state_event("!room:test", "org.knarr.managed", {"key": "val"})
+
+
+def test_get_room_state_event_found():
+    client = make_client({
+        "/login": (200, {"access_token": "tok"}),
+        "/state/org.knarr.managed": (200, {"key": "val"}),
+    })
+    result = client.get_room_state_event("!room:test", "org.knarr.managed")
+    assert result == {"key": "val"}
+
+
+def test_get_room_state_event_missing():
+    client = make_client({
+        "/login": (200, {"access_token": "tok"}),
+    })
+    result = client.get_room_state_event("!room:test", "org.knarr.managed")
+    assert result is None
