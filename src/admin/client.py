@@ -104,6 +104,13 @@ class MatrixAdminClient:
             json={"user_id": user_id},
         )
 
+    def join_room(self, room_id: str) -> None:
+        """Join a room as the authenticated user."""
+        self._authed_request(
+            "POST",
+            f"/_matrix/client/v3/rooms/{self._encode_room(room_id)}/join",
+        )
+
     def send_message(self, room_id: str, body: str) -> str:
         """Send a text message to a room. Returns the event ID."""
         txn_id = uuid.uuid4().hex
@@ -208,7 +215,7 @@ class MatrixAdminClient:
             )
             return resp.json().get("room_id")
         except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
+            if e.response.status_code in (400, 404):
                 return None
             raise
 

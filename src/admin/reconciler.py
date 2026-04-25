@@ -128,9 +128,13 @@ class Reconciler:
             report.actions.append(
                 Action(resource, "create", f'"{room.name}" in {parent_space_key}')
             )
-            # All members need inviting for a new room
+            # Members are invited as part of create; the creator (admin) is
+            # auto-joined by Synapse so we skip them here.
+            creator_mxid = f"@{self.client.admin_user}:{self.config.server_name}"
             for member_ref in room.members:
                 user_id = self._resolve_user(member_ref)
+                if user_id == creator_mxid:
+                    continue
                 report.actions.append(
                     Action(resource, "invite", f"{user_id} to {key}")
                 )
@@ -207,7 +211,13 @@ class Reconciler:
             return
 
         alias = key
-        members = [self._resolve_user(m) for m in space.members]
+        # Filter out the creator (admin user) — Synapse rejects inviting them
+        creator_mxid = f"@{self.client.admin_user}:{self.config.server_name}"
+        members = [
+            self._resolve_user(m)
+            for m in space.members
+            if self._resolve_user(m) != creator_mxid
+        ]
         room_id = self.client.create_space(
             name=space.name,
             alias=alias,
@@ -232,11 +242,17 @@ class Reconciler:
         if not room:
             return
 
-        members = [self._resolve_user(m) for m in room.members]
+        # Filter out the creator (admin user) — Synapse rejects inviting them
+        creator_mxid = f"@{self.client.admin_user}:{self.config.server_name}"
+        members = [
+            self._resolve_user(m)
+            for m in room.members
+            if self._resolve_user(m) != creator_mxid
+        ]
         # Auto-invite bridge bot if bridge config present
         if room.bridge and "bridge_bot" in self.config.users:
             bot = self.config.users["bridge_bot"]
-            if bot not in members:
+            if bot not in members and bot != creator_mxid:
                 members.append(bot)
 
         room_id = self.client.create_room(
@@ -310,6 +326,15 @@ class Reconciler:
         room_id = self._room_ids.get(room.alias)
         if not room_id:
             room_id = self.client.resolve_alias(self._full_alias(room.alias))
+        if room_id:
+            # The bridge operator user (used by BridgeManager) needs to be a
+            # member of the room to send the !discord bridge command. They
+            # were invited during room creation; auto-join here.
+            try:
+                self.bridge_manager.client.join_room(room_id)
+            except Exception:
+                pass  # Already joined or other transient issue
+
         if not room_id:
             return
 
