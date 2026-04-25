@@ -1,0 +1,43 @@
+community: knarr-test
+display_name: "Knarr Test"
+
+spaces:
+  knarr-test:
+    name: "Knarr Test"
+    visibility: private
+    members: [admin, knarr]
+
+    rooms:
+      social-watch:
+        alias: social-watch
+        name: "#social-watch"
+        topic: "Platform monitoring alerts"
+        members: [router]
+        watchers:
+          reddit:
+            subreddit: Terasology
+            interval_seconds: 21600
+          github:
+            repos: ["MovingBlocks/Terasology"]
+            interval_seconds: 21600
+            token_env: GITHUB_TOKEN
+
+      bridge-test:
+        alias: bridge-test
+        name: "#autoboros-testing [test]"
+        topic: "Bridged to Demicracy Discord #autoboros-testing"
+        members: [admin, knarr]
+        bridge:
+          discord:
+            channel_id: "1342947610008485921"
+            relay: true
+
+    spaces:
+      feeds:
+        name: "Feeds"
+        visibility: private
+        rooms:
+          feed-reddit:
+            alias: feed-reddit
+            name: "#feed-reddit"
+            topic: "Reddit watcher alerts"
