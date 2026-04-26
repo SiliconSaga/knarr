@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import traceback
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Optional
 
 import httpx
@@ -98,7 +98,7 @@ class Reconciler:
         return {
             "config_key": key,
             "managed_by": "knarr-reconciler",
-            "last_reconciled": datetime.now(timezone.utc).isoformat(),
+            "last_reconciled": datetime.now(UTC).isoformat(),
         }
 
     def _diff_space(

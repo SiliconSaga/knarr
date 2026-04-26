@@ -221,9 +221,11 @@ kubectl rollout restart deploy/knarr-watchers deploy/knarr-router -n knarr
 python3 -m pytest tests/ -v
 ```
 
-21 tests covering event schemas, Reddit/GitHub watcher parsing and deduplication,
-router message formatting, Matrix admin client operations, and Discord bridge
-manager command sequencing.
+54 unit tests covering event schemas, Reddit/GitHub watcher parsing and
+deduplication, router message formatting, Matrix admin client operations,
+Discord bridge manager command sequencing, config schema validation, and
+reconciler diff/apply logic. BDD integration scenarios for the config
+reconciler live under `tests/features/`.
 
 ## Kafka Topics
 
