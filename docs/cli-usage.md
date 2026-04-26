@@ -142,18 +142,36 @@ The `bridge-channel --room` command does three things in one call:
 # Validate config syntax (no Matrix connection needed)
 knarr config validate [--config config/knarr.yaml]
 
-# Audit: dry-run, report what would change (exit code 2 if drift)
+# Audit: dry-run, report what would change
 knarr config audit [--config config/knarr.yaml]
 
 # Apply: converge live state to match config
-knarr config apply [--config config/knarr.yaml]
+knarr config apply [--config config/knarr.yaml] [--allow-missing-secrets]
 ```
 
 Config files live in `config/`:
 - `config/knarr.yaml` — index file (server name, users, secrets, community references)
 - `config/test.yaml` — per-community room topology, bridges, watchers
 
-See `docs/plans/2026-04-25-config-reconciler-design.md` for the full design.
+#### Exit codes
+
+| Command | Code | Meaning |
+|---------|------|---------|
+| `validate` | 0 | Config is valid |
+| `validate` | 1 | Config or file error |
+| `audit` | 0 | Config is valid and Matrix matches it (no drift) |
+| `audit` | 1 | Config or file error |
+| `audit` | 2 | Drift detected — apply would make changes |
+| `apply` | 0 | Applied successfully (or no changes needed) |
+| `apply` | 1 | Config error, missing secrets, or apply failed |
+
+`audit`'s exit code 2 is intentional for CI use: a non-zero exit means
+"there is drift", letting you wire it into a periodic check that fails
+loudly when production drifts from Git.
+
+`apply` aborts with exit 1 when secrets referenced by the config aren't
+set in the environment — preventing partial mutations. Pass
+`--allow-missing-secrets` to override.
 
 ### Utility
 

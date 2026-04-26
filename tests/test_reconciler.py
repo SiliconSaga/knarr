@@ -133,7 +133,49 @@ def test_diff_invites_missing_members(mock_client):
     report = reconciler.diff()
 
     invite_actions = [a for a in report.actions if a.operation == "invite"]
-    assert any("@router:test.local" in a.details for a in invite_actions)
+    assert any(a.subject == "@router:test.local" for a in invite_actions)
+    assert any(a.target == "room:my-room" for a in invite_actions)
+
+
+def test_apply_invite_uses_structured_target(mock_client):
+    """Invite actions carry target/subject fields, not parsed from details."""
+    mock_client.resolve_alias.return_value = "!existing:test.local"
+    mock_client.get_room_state.return_value = {"name": "My Room"}
+    mock_client.get_room_members.return_value = []
+    mock_client.get_room_state_event.return_value = {"config_key": "my-room"}
+
+    config = make_config(rooms={
+        "my-room": {
+            "alias": "different-alias", "name": "My Room",
+            "members": ["router"],
+        },
+    })
+    reconciler = Reconciler(mock_client, config)
+    report = reconciler.apply()
+
+    # The reconciler should have invited router via the room_id from resolve_alias
+    mock_client.invite.assert_called()
+    invited_user_ids = [c.args[1] for c in mock_client.invite.call_args_list]
+    assert "@router:test.local" in invited_user_ids
+
+
+def test_diff_room_with_custom_alias_keys_room_ids_consistently(mock_client):
+    """When room.alias differs from key, _room_ids is keyed by resource, not alias."""
+    mock_client.resolve_alias.return_value = "!found:test.local"
+    mock_client.get_room_state.return_value = {"name": "X"}
+    mock_client.get_room_members.return_value = []
+    mock_client.get_room_state_event.return_value = {"config_key": "my-room"}
+
+    config = make_config(rooms={
+        "my-room": {"alias": "different-alias", "name": "My Room"},
+    })
+    reconciler = Reconciler(mock_client, config)
+    reconciler.diff()
+
+    # _room_ids should be keyed by the resource string ("room:my-room"),
+    # not by room.alias ("different-alias")
+    assert "room:my-room" in reconciler._room_ids
+    assert "different-alias" not in reconciler._room_ids
 
 
 def test_diff_detects_bridge_needed(mock_client):

@@ -24,24 +24,60 @@ from .config_schema import load_config, validate_config, ConfigError
 from .reconciler import Reconciler
 
 
-def get_client() -> MatrixAdminClient:
+_ACTION_ICONS = {
+    "create": "+",
+    "skip": "=",
+    "invite": ">",
+    "bridge": "~",
+    "config": "*",
+    "adopt": "!",
+    "error": "X",
+}
+
+
+def _plural(n: int, singular: str, plural: str) -> str:
+    return f"{n} {singular if n == 1 else plural}"
+
+
+def client_from_env(
+    user_var: str,
+    password_var: str,
+    default_user: str,
+    on_missing_password,
+) -> MatrixAdminClient:
+    """Construct a MatrixAdminClient from environment variables.
+
+    ``on_missing_password`` is called when the password env var is unset and
+    decides what to do (CLI: print error + sys.exit; tests: pytest.skip).
+    Centralised so a future env var change lands in one place.
+    """
     homeserver = os.environ.get("KNARR_HOMESERVER", "http://matrix.knarr.local")
-    user = os.environ.get("KNARR_ADMIN_USER", "admin")
-    password = os.environ.get("KNARR_ADMIN_PASSWORD")
+    user = os.environ.get(user_var, default_user)
+    password = os.environ.get(password_var)
     if not password:
-        click.echo("Error: KNARR_ADMIN_PASSWORD is required.", err=True)
-        sys.exit(1)
+        on_missing_password()
     return MatrixAdminClient(homeserver, user, password)
+
+
+def _abort_missing(env_var: str):
+    def _abort():
+        click.echo(f"Error: {env_var} is required.", err=True)
+        sys.exit(1)
+    return _abort
+
+
+def get_client() -> MatrixAdminClient:
+    return client_from_env(
+        "KNARR_ADMIN_USER", "KNARR_ADMIN_PASSWORD", "admin",
+        _abort_missing("KNARR_ADMIN_PASSWORD"),
+    )
 
 
 def get_bridge_client() -> MatrixAdminClient:
-    homeserver = os.environ.get("KNARR_HOMESERVER", "http://matrix.knarr.local")
-    user = os.environ.get("KNARR_BRIDGE_USER", "knarr")
-    password = os.environ.get("KNARR_BRIDGE_PASSWORD")
-    if not password:
-        click.echo("Error: KNARR_BRIDGE_PASSWORD is required.", err=True)
-        sys.exit(1)
-    return MatrixAdminClient(homeserver, user, password)
+    return client_from_env(
+        "KNARR_BRIDGE_USER", "KNARR_BRIDGE_PASSWORD", "knarr",
+        _abort_missing("KNARR_BRIDGE_PASSWORD"),
+    )
 
 
 def get_bridge_manager() -> BridgeManager:
@@ -281,9 +317,11 @@ def config_validate(config_path):
             bridge_count += cb; watcher_count += cw
 
     click.echo(
-        f"Config valid: {len(cfg.communities)} community, "
-        f"{space_count} spaces, {room_count} rooms, "
-        f"{bridge_count} bridges, {watcher_count} watchers"
+        f"Config valid: {_plural(len(cfg.communities), 'community', 'communities')}, "
+        f"{_plural(space_count, 'space', 'spaces')}, "
+        f"{_plural(room_count, 'room', 'rooms')}, "
+        f"{_plural(bridge_count, 'bridge', 'bridges')}, "
+        f"{_plural(watcher_count, 'watcher', 'watchers')}"
     )
 
 
@@ -302,12 +340,11 @@ def config_audit(config_path):
     reconciler = Reconciler(client, cfg)
     report = reconciler.diff()
 
-    click.echo(f"Loading config: {config_path} ({len(cfg.communities)} community)")
+    click.echo(f"Loading config: {config_path} ({_plural(len(cfg.communities), 'community', 'communities')})")
     click.echo("Reading Matrix state...\n")
 
     for action in report.actions:
-        icon = {"create": "+", "skip": "=", "invite": ">", "bridge": "~", "config": "*", "adopt": "!"}
-        click.echo(f"  [{icon.get(action.operation, '?')}] {action.resource:<28} {action.operation:<8} {action.details}")
+        click.echo(f"  [{_ACTION_ICONS.get(action.operation, '?')}] {action.resource:<28} {action.operation:<8} {action.details}")
 
     click.echo(f"\nAudit: {report.summary()}")
     if report.has_drift:
@@ -316,7 +353,9 @@ def config_audit(config_path):
 
 @config.command("apply")
 @click.option("--config", "config_path", default="config/knarr.yaml", help="Config file path")
-def config_apply(config_path):
+@click.option("--allow-missing-secrets", is_flag=True,
+              help="Proceed even when configured secrets aren't set in the environment")
+def config_apply(config_path, allow_missing_secrets):
     """Apply config: converge live state to match desired state."""
     try:
         cfg = load_config(config_path)
@@ -325,10 +364,18 @@ def config_apply(config_path):
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
-    # Validate secrets are available
-    for name, env_var in cfg.secrets.items():
-        if not os.environ.get(env_var):
-            click.echo(f"Warning: secret '{name}' ({env_var}) not set in environment", err=True)
+    # Validate secrets are available — fail by default to avoid partial mutations
+    missing = [
+        (name, env_var)
+        for name, env_var in cfg.secrets.items()
+        if not os.environ.get(env_var)
+    ]
+    if missing:
+        for name, env_var in missing:
+            click.echo(f"Missing secret '{name}' ({env_var}) in environment", err=True)
+        if not allow_missing_secrets:
+            click.echo("Aborting. Re-run with --allow-missing-secrets to proceed anyway.", err=True)
+            sys.exit(1)
 
     client = get_client()
     bridge_mgr = None
@@ -338,17 +385,16 @@ def config_apply(config_path):
 
     reconciler = Reconciler(client, cfg, bridge_manager=bridge_mgr)
 
-    click.echo(f"Loading config: {config_path} ({len(cfg.communities)} community)")
+    click.echo(f"Loading config: {config_path} ({_plural(len(cfg.communities), 'community', 'communities')})")
     click.echo("Reading Matrix state...\n")
 
     report = reconciler.apply()
 
     for action in report.actions:
-        icon = {"create": "+", "skip": "=", "invite": ">", "bridge": "~", "config": "*", "adopt": "!", "error": "X"}
-        click.echo(f"  [{icon.get(action.operation, '?')}] {action.resource:<28} {action.operation:<8} {action.details}")
+        click.echo(f"  [{_ACTION_ICONS.get(action.operation, '?')}] {action.resource:<28} {action.operation:<8} {action.details}")
 
     if report.errors:
-        click.echo(f"\nErrors:", err=True)
+        click.echo("\nErrors:", err=True)
         for error in report.errors:
             click.echo(f"  {error}", err=True)
 

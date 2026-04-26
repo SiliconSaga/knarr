@@ -1,6 +1,10 @@
 community: knarr-test
 display_name: "Knarr Test"
 
+# NOTE: Room members are NOT inherited from parent spaces. Each room must
+# list every user that should be a member. This config covers a small test
+# setup where only `router` watches alerts and admin/knarr operate the bridge.
+
 spaces:
   knarr-test:
     name: "Knarr Test"
@@ -12,6 +16,8 @@ spaces:
         alias: social-watch
         name: "#social-watch"
         topic: "Platform monitoring alerts"
+        # router posts watcher alerts; add admin/knarr/cervator here if you
+        # want them to see the room without going through the parent space.
         members: [router]
         watchers:
           reddit:
@@ -29,6 +35,9 @@ spaces:
         members: [admin, knarr]
         bridge:
           discord:
+            # Designated test-only Discord channel in the SiliconSaga-controlled
+            # Demicracy guild. Anyone running `knarr config apply` will bridge
+            # to this specific channel. Replace before using elsewhere.
             channel_id: "1342947610008485921"
             relay: true
 

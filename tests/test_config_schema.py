@@ -1,7 +1,6 @@
 """Tests for config loading and validation."""
 
 import pytest
-import yaml
 
 from src.admin.config_schema import (
     load_config,

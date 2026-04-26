@@ -1,23 +1,34 @@
 """Shared fixtures for BDD integration tests."""
 
-import os
+from pathlib import Path
+
 import pytest
 
-from src.admin.client import MatrixAdminClient
+from src.admin.cli import client_from_env
+from src.admin.config_schema import load_config
+
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.fixture
 def matrix_client():
     """Create a client connected to the real Synapse on k3d."""
-    homeserver = os.environ.get("KNARR_HOMESERVER", "http://matrix.knarr.local")
-    user = os.environ.get("KNARR_ADMIN_USER", "admin")
-    password = os.environ.get("KNARR_ADMIN_PASSWORD")
-    if not password:
-        pytest.skip("KNARR_ADMIN_PASSWORD not set — skipping integration test")
-    return MatrixAdminClient(homeserver, user, password)
+    return client_from_env(
+        "KNARR_ADMIN_USER",
+        "KNARR_ADMIN_PASSWORD",
+        "admin",
+        lambda: pytest.skip("KNARR_ADMIN_PASSWORD not set — skipping integration test"),
+    )
 
 
 @pytest.fixture
 def test_config_path():
-    """Path to the test config."""
-    return "config/knarr.yaml"
+    """Absolute path to the test config — robust to alternative pytest invocations."""
+    return str(_REPO_ROOT / "config" / "knarr.yaml")
+
+
+@pytest.fixture
+def test_config():
+    """Load the test config so steps can derive aliases dynamically."""
+    return load_config(str(_REPO_ROOT / "config" / "knarr.yaml"))

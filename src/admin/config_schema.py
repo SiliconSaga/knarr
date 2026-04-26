@@ -112,7 +112,7 @@ class KnarrConfig:
 def load_config(config_path: str) -> KnarrConfig:
     """Load the index config and all referenced community configs."""
     config_dir = Path(config_path).parent
-    with open(config_path) as f:
+    with open(config_path, encoding="utf-8") as f:
         index_data = yaml.safe_load(f)
 
     def community_loader(rel_path: str) -> dict:
@@ -121,7 +121,7 @@ def load_config(config_path: str) -> KnarrConfig:
             full_path = config_dir.parent / rel_path
         if not full_path.exists():
             raise ConfigError(f"Community config not found: {rel_path}")
-        with open(full_path) as f:
+        with open(full_path, encoding="utf-8") as f:
             return yaml.safe_load(f)
 
     return KnarrConfig.from_dict(index_data, community_loader)
@@ -146,7 +146,11 @@ def _collect_user_refs(space: SpaceConfig) -> set[str]:
 
 
 def validate_config(config: KnarrConfig) -> None:
-    """Validate cross-references and uniqueness constraints."""
+    """Validate cross-references and uniqueness constraints.
+
+    Accumulates all errors and raises a single ConfigError with the full set,
+    so users can fix everything in one pass.
+    """
     all_aliases: list[str] = []
     all_user_refs: set[str] = set()
 
@@ -155,15 +159,17 @@ def validate_config(config: KnarrConfig) -> None:
             all_aliases.extend(_collect_aliases(space))
             all_user_refs.update(_collect_user_refs(space))
 
-    seen = set()
+    errors: list[str] = []
+    seen: set[str] = set()
     for alias in all_aliases:
         if alias in seen:
-            raise ConfigError(f"Duplicate room alias: {alias}")
+            errors.append(f"Duplicate room alias: {alias}")
         seen.add(alias)
 
-    for ref in all_user_refs:
-        if ref not in config.users:
-            raise ConfigError(
-                f"Unknown user reference: {ref} "
-                f"(not in knarr.yaml users: {list(config.users.keys())})"
-            )
+    known = set(config.users.keys())
+    for ref in sorted(all_user_refs):
+        if ref not in known:
+            errors.append(f"Unknown user reference: {ref} (known: {sorted(known)})")
+
+    if errors:
+        raise ConfigError("\n  - " + "\n  - ".join(errors))

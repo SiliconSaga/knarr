@@ -171,6 +171,15 @@ def test_resolve_alias_returns_none_for_missing():
     assert room_id is None
 
 
+def test_resolve_alias_returns_none_on_400():
+    """Synapse returns 400 (not 404) for malformed/non-existent aliases."""
+    client = make_client({
+        "/login": (200, {"access_token": "tok"}),
+        "/directory/room/": (400, {"errcode": "M_NOT_FOUND"}),
+    })
+    assert client.resolve_alias("#weird:test") is None
+
+
 def test_get_room_state_returns_name_and_topic():
     client = make_client({
         "/login": (200, {"access_token": "tok"}),
@@ -201,11 +210,27 @@ def test_get_room_members():
 
 
 def test_set_room_alias():
-    client = make_client({
-        "/login": (200, {"access_token": "tok"}),
-        "/directory/room/": (200, {}),
-    })
+    requests_seen = []
+
+    def capturing_handler(request: httpx.Request) -> httpx.Response:
+        if "/login" in request.url.path:
+            return httpx.Response(200, json={"access_token": "tok"})
+        if "/directory/room/" in request.url.path:
+            requests_seen.append({
+                "method": request.method,
+                "path": request.url.path,
+                "body": json.loads(request.content) if request.content else None,
+            })
+            return httpx.Response(200, json={})
+        return httpx.Response(404, json={})
+
+    client = MatrixAdminClient("http://test:8008", "admin", "secret")
+    client._http = httpx.Client(transport=httpx.MockTransport(capturing_handler))
+
     client.set_room_alias("!room:test", "#myalias:test")
+    assert requests_seen[-1]["method"] == "PUT"
+    assert "myalias" in requests_seen[-1]["path"]
+    assert requests_seen[-1]["body"] == {"room_id": "!room:test"}
 
 
 def test_create_space_returns_room_id():

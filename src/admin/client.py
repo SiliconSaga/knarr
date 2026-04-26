@@ -78,15 +78,24 @@ class MatrixAdminClient:
         self,
         name: str,
         topic: str = "",
+        alias: str = "",
         invite: Optional[list[str]] = None,
         private: bool = True,
         direct: bool = False,
     ) -> str:
-        """Create a Matrix room and return its room ID."""
+        """Create a Matrix room and return its room ID.
+
+        When ``alias`` is provided the room is created with that alias atomically
+        (Synapse rejects the call if the alias is taken). Prefer this over
+        creating the room and then calling ``set_room_alias`` separately —
+        the two-step path can leak orphan rooms on retry.
+        """
         body: dict = {
             "name": name,
             "preset": "private_chat" if private else "public_chat",
         }
+        if alias:
+            body["room_alias_name"] = alias
         if topic:
             body["topic"] = topic
         if invite:
@@ -280,11 +289,12 @@ class MatrixAdminClient:
 
     def add_space_child(self, space_id: str, child_id: str) -> None:
         """Add a room or space as a child of a space."""
-        server = child_id.split(":")[1] if ":" in child_id else "localhost"
+        # split(":", 1) preserves host:port for federation-style room IDs
+        server = child_id.split(":", 1)[1] if ":" in child_id else "localhost"
         self._authed_request(
             "PUT",
             f"/_matrix/client/v3/rooms/{self._encode_room(space_id)}"
-            f"/state/m.space.child/{child_id}",
+            f"/state/m.space.child/{quote(child_id, safe='')}",
             json={"via": [server]},
         )
 

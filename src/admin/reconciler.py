@@ -2,19 +2,36 @@
 
 from __future__ import annotations
 
+import logging
+import traceback
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 
+import httpx
+
 from .client import MatrixAdminClient
 from .config_schema import KnarrConfig, SpaceConfig, RoomConfig
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
 class Action:
+    """A single reconciler action.
+
+    ``resource`` is the canonical identifier (``space:<key>``, ``room:<key>``,
+    ``bridge:<key>``, ``watcher:<type>``) that matches the apply lookup key.
+    ``target`` and ``subject`` are structured fields used by apply handlers
+    (e.g., the user_id to invite, or the parent space key). ``details`` is a
+    human-readable display string and is never parsed.
+    """
+
     resource: str
-    operation: str  # create, update, invite, bridge, config, skip
+    operation: str  # create, update, invite, bridge, config, skip, adopt
     details: str
+    target: Optional[str] = None
+    subject: Optional[str] = None
 
 
 @dataclass
@@ -48,7 +65,8 @@ class Reconciler:
         self.client = client
         self.config = config
         self.bridge_manager = bridge_manager
-        self._room_ids: dict[str, str] = {}  # alias -> room_id mapping
+        # Keyed by Action.resource (e.g. "space:knarr-test", "room:social-watch")
+        self._room_ids: dict[str, str] = {}
 
     def diff(self) -> ReconcileReport:
         """Compute the diff between desired config and live state."""
@@ -73,6 +91,16 @@ class Reconciler:
     def _resolve_user(self, shorthand: str) -> str:
         return self.config.users.get(shorthand, shorthand)
 
+    def _creator_mxid(self) -> str:
+        return f"@{self.client.admin_user}:{self.config.server_name}"
+
+    def _managed_event_payload(self, key: str) -> dict:
+        return {
+            "config_key": key,
+            "managed_by": "knarr-reconciler",
+            "last_reconciled": datetime.now(timezone.utc).isoformat(),
+        }
+
     def _diff_space(
         self,
         key: str,
@@ -88,7 +116,7 @@ class Reconciler:
         if room_id is None:
             report.actions.append(Action(resource, "create", f'"{space.name}" ({space.visibility})'))
         else:
-            self._room_ids[key] = room_id
+            self._room_ids[resource] = room_id
             managed = self.client.get_room_state_event(room_id, "org.knarr.managed")
             if managed:
                 report.actions.append(Action(resource, "skip", f"already exists ({alias})"))
@@ -101,7 +129,13 @@ class Reconciler:
                 user_id = self._resolve_user(member_ref)
                 if user_id not in current_members:
                     report.actions.append(
-                        Action(resource, "invite", f"{user_id} to space {key}")
+                        Action(
+                            resource,
+                            "invite",
+                            f"{user_id} to {key}",
+                            target=resource,
+                            subject=user_id,
+                        )
                     )
 
         # Diff rooms within this space
@@ -130,16 +164,22 @@ class Reconciler:
             )
             # Members are invited as part of create; the creator (admin) is
             # auto-joined by Synapse so we skip them here.
-            creator_mxid = f"@{self.client.admin_user}:{self.config.server_name}"
+            creator_mxid = self._creator_mxid()
             for member_ref in room.members:
                 user_id = self._resolve_user(member_ref)
                 if user_id == creator_mxid:
                     continue
                 report.actions.append(
-                    Action(resource, "invite", f"{user_id} to {key}")
+                    Action(
+                        resource,
+                        "invite",
+                        f"{user_id} to {key}",
+                        target=resource,
+                        subject=user_id,
+                    )
                 )
         else:
-            self._room_ids[room.alias] = room_id
+            self._room_ids[resource] = room_id
             managed = self.client.get_room_state_event(room_id, "org.knarr.managed")
             if managed:
                 report.actions.append(Action(resource, "skip", f"already exists ({alias})"))
@@ -152,7 +192,13 @@ class Reconciler:
                 user_id = self._resolve_user(member_ref)
                 if user_id not in current_members:
                     report.actions.append(
-                        Action(resource, "invite", f"{user_id} to {key}")
+                        Action(
+                            resource,
+                            "invite",
+                            f"{user_id} to {key}",
+                            target=resource,
+                            subject=user_id,
+                        )
                     )
 
         # Bridge config
@@ -163,6 +209,7 @@ class Reconciler:
                         f"bridge:{key}",
                         "bridge",
                         f"{bridge_type} channel {bridge_config.get('channel_id', '?')}",
+                        target=resource,
                     )
                 )
 
@@ -187,7 +234,7 @@ class Reconciler:
             try:
                 if action.operation == "skip":
                     continue
-                elif action.operation == "create" and action.resource.startswith("space:"):
+                if action.operation == "create" and action.resource.startswith("space:"):
                     self._apply_create_space(action)
                 elif action.operation == "create" and action.resource.startswith("room:"):
                     self._apply_create_room(action)
@@ -198,21 +245,28 @@ class Reconciler:
                 elif action.operation == "bridge":
                     self._apply_bridge(action)
                 elif action.operation == "config":
-                    pass  # Watcher config applied in batch below
-            except Exception as e:
-                report.errors.append(f"{action.resource}: {e}")
+                    pass  # Watcher config applied in batch (future)
+            except httpx.HTTPStatusError as e:
+                body = e.response.text[:500] if e.response.text else ""
+                report.errors.append(
+                    f"{action.resource}: {action.operation} failed "
+                    f"({e.response.status_code} on {e.request.method} {e.request.url}): {body}"
+                )
+            except Exception as e:  # noqa: BLE001 — last-resort safety net
+                report.errors.append(
+                    f"{action.resource}: {action.operation} failed: {e!r}\n"
+                    f"{traceback.format_exc()}"
+                )
 
     def _apply_create_space(self, action: Action) -> None:
         """Create a space and record its room ID."""
         key = action.resource.split(":", 1)[1]
-        # Find the space config
         space = self._find_space(key)
         if not space:
             return
 
-        alias = key
         # Filter out the creator (admin user) — Synapse rejects inviting them
-        creator_mxid = f"@{self.client.admin_user}:{self.config.server_name}"
+        creator_mxid = self._creator_mxid()
         members = [
             self._resolve_user(m)
             for m in space.members
@@ -220,30 +274,26 @@ class Reconciler:
         ]
         room_id = self.client.create_space(
             name=space.name,
-            alias=alias,
+            alias=key,
             private=(space.visibility == "private"),
             invite=members,
         )
-        self._room_ids[key] = room_id
+        self._room_ids[action.resource] = room_id
         self.client.set_room_state_event(
             room_id,
             "org.knarr.managed",
-            {
-                "config_key": key,
-                "managed_by": "knarr-reconciler",
-                "last_reconciled": datetime.now(timezone.utc).isoformat(),
-            },
+            self._managed_event_payload(key),
         )
 
     def _apply_create_room(self, action: Action) -> None:
-        """Create a room, assign alias, add to parent space, set managed marker."""
+        """Atomically create a room with its alias, add to parent space, set managed marker."""
         key = action.resource.split(":", 1)[1]
         room = self._find_room(key)
         if not room:
             return
 
         # Filter out the creator (admin user) — Synapse rejects inviting them
-        creator_mxid = f"@{self.client.admin_user}:{self.config.server_name}"
+        creator_mxid = self._creator_mxid()
         members = [
             self._resolve_user(m)
             for m in room.members
@@ -255,64 +305,67 @@ class Reconciler:
             if bot not in members and bot != creator_mxid:
                 members.append(bot)
 
+        # Atomic create + alias assignment — Synapse rejects the call if the
+        # alias is taken, preventing orphan rooms when retries collide.
         room_id = self.client.create_room(
             name=room.name,
             topic=room.topic,
+            alias=room.alias,
             invite=members,
             private=True,
         )
-        self.client.set_room_alias(room_id, self._full_alias(room.alias))
-        self._room_ids[room.alias] = room_id
+        self._room_ids[action.resource] = room_id
 
         # Add to parent space if known
         parent_key = self._find_parent_space_key(key)
-        if parent_key and parent_key in self._room_ids:
-            self.client.add_space_child(self._room_ids[parent_key], room_id)
+        if parent_key:
+            parent_resource = f"space:{parent_key}"
+            if parent_resource in self._room_ids:
+                self.client.add_space_child(self._room_ids[parent_resource], room_id)
 
         self.client.set_room_state_event(
             room_id,
             "org.knarr.managed",
-            {
-                "config_key": key,
-                "managed_by": "knarr-reconciler",
-                "last_reconciled": datetime.now(timezone.utc).isoformat(),
-            },
+            self._managed_event_payload(key),
         )
 
     def _apply_adopt(self, action: Action) -> None:
         """Mark an existing unmanaged room as managed."""
+        # Resolve the alias for this resource (room.alias may differ from key)
         key = action.resource.split(":", 1)[1]
-        alias = self._full_alias(key)
+        if action.resource.startswith("room:"):
+            room = self._find_room(key)
+            alias = self._full_alias(room.alias) if room else self._full_alias(key)
+        else:
+            alias = self._full_alias(key)
+
         room_id = self.client.resolve_alias(alias)
         if room_id:
-            self._room_ids[key] = room_id
+            self._room_ids[action.resource] = room_id
             self.client.set_room_state_event(
                 room_id,
                 "org.knarr.managed",
-                {
-                    "config_key": key,
-                    "managed_by": "knarr-reconciler",
-                    "last_reconciled": datetime.now(timezone.utc).isoformat(),
-                },
+                self._managed_event_payload(key),
             )
 
     def _apply_invite(self, action: Action) -> None:
-        """Invite a user to a room."""
-        # Parse user_id from details: "@user:server to room-key"
-        parts = action.details.split(" to ", 1)
-        if len(parts) != 2:
+        """Invite a user to a room or space."""
+        if not action.target or not action.subject:
             return
-        user_id = parts[0].strip()
-        target_key = parts[1].strip()
 
-        # Look up room_id by alias
-        if target_key in self._room_ids:
-            self.client.invite(self._room_ids[target_key], user_id)
-        else:
-            # Try resolving by alias
-            room_id = self.client.resolve_alias(self._full_alias(target_key))
-            if room_id:
-                self.client.invite(room_id, user_id)
+        room_id = self._room_ids.get(action.target)
+        if not room_id:
+            # Fall back to alias resolution using the resource's room.alias
+            target_type, target_key = action.target.split(":", 1)
+            if target_type == "room":
+                room = self._find_room(target_key)
+                alias = self._full_alias(room.alias) if room else self._full_alias(target_key)
+            else:
+                alias = self._full_alias(target_key)
+            room_id = self.client.resolve_alias(alias)
+
+        if room_id:
+            self.client.invite(room_id, action.subject)
 
     def _apply_bridge(self, action: Action) -> None:
         """Bridge a room to a Discord channel."""
@@ -323,20 +376,22 @@ class Reconciler:
         if not room or not room.bridge:
             return
 
-        room_id = self._room_ids.get(room.alias)
+        room_resource = f"room:{key}"
+        room_id = self._room_ids.get(room_resource)
         if not room_id:
             room_id = self.client.resolve_alias(self._full_alias(room.alias))
-        if room_id:
-            # The bridge operator user (used by BridgeManager) needs to be a
-            # member of the room to send the !discord bridge command. They
-            # were invited during room creation; auto-join here.
-            try:
-                self.bridge_manager.client.join_room(room_id)
-            except Exception:
-                pass  # Already joined or other transient issue
-
         if not room_id:
             return
+
+        # The bridge operator user (used by BridgeManager) needs to be a
+        # member of the room to send the !discord bridge command. Surface real
+        # errors but ignore "already in the room" (403).
+        try:
+            self.bridge_manager.client.join_room(room_id)
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code != 403:
+                raise
+            logger.debug("Bridge user already in room %s", room_id)
 
         for bridge_type, bridge_config in room.bridge.items():
             if bridge_type == "discord":
