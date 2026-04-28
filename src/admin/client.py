@@ -3,7 +3,6 @@
 import os
 import uuid
 from pathlib import Path
-from typing import Optional
 from urllib.parse import quote
 
 import httpx
@@ -27,7 +26,7 @@ class MatrixAdminClient:
         self.homeserver = homeserver.rstrip("/")
         self.admin_user = admin_user
         self.admin_password = admin_password
-        self._token: Optional[str] = None
+        self._token: str | None = None
         self._http = httpx.Client(timeout=timeout)
 
     def _api(self, path: str) -> str:
@@ -79,7 +78,7 @@ class MatrixAdminClient:
         name: str,
         topic: str = "",
         alias: str = "",
-        invite: Optional[list[str]] = None,
+        invite: list[str] | None = None,
         private: bool = True,
         direct: bool = False,
     ) -> str:
@@ -150,7 +149,7 @@ class MatrixAdminClient:
         username: str,
         password: str,
         admin: bool = False,
-        server_name: Optional[str] = None,
+        server_name: str | None = None,
     ) -> str:
         """Register a new user via Synapse v2 admin API. Returns the user ID.
 
@@ -215,7 +214,7 @@ class MatrixAdminClient:
         resp = self._authed_request("GET", "/_matrix/client/v3/joined_rooms")
         return resp.json().get("joined_rooms", [])
 
-    def resolve_alias(self, alias: str) -> Optional[str]:
+    def resolve_alias(self, alias: str) -> str | None:
         """Resolve a room alias to a room ID. Returns None if not found."""
         encoded_alias = quote(alias, safe="")
         try:
@@ -255,6 +254,27 @@ class MatrixAdminClient:
         )
         return list(resp.json().get("joined", {}).keys())
 
+    def get_room_members_with_state(
+        self, room_id: str, states: tuple[str, ...] = ("invite", "join")
+    ) -> list[str]:
+        """List user IDs whose membership in the room is one of ``states``.
+
+        Defaults to invite + join so callers can treat "we already invited them
+        but they haven't accepted" the same as "joined" — useful for the
+        reconciler, which would otherwise re-emit invite actions on every audit
+        for any user who hasn't accepted yet.
+        """
+        resp = self._authed_request(
+            "GET",
+            f"/_matrix/client/v3/rooms/{self._encode_room(room_id)}/members",
+        )
+        return [
+            e["state_key"]
+            for e in resp.json().get("chunk", [])
+            if e.get("type") == "m.room.member"
+            and e.get("content", {}).get("membership") in states
+        ]
+
     def set_room_alias(self, room_id: str, alias: str) -> None:
         """Assign an alias to a room."""
         encoded_alias = quote(alias, safe="")
@@ -269,7 +289,7 @@ class MatrixAdminClient:
         name: str,
         alias: str = "",
         topic: str = "",
-        invite: Optional[list[str]] = None,
+        invite: list[str] | None = None,
         private: bool = True,
     ) -> str:
         """Create a Matrix space (a room with m.space type). Returns room ID."""
@@ -311,7 +331,7 @@ class MatrixAdminClient:
 
     def get_room_state_event(
         self, room_id: str, event_type: str
-    ) -> Optional[dict]:
+    ) -> dict | None:
         """Read a state event from a room. Returns None if not found."""
         try:
             resp = self._authed_request(

@@ -18,11 +18,10 @@ import sys
 
 import click
 
-from .client import MatrixAdminClient
 from .bridge import BridgeManager
-from .config_schema import load_config, validate_config, ConfigError
+from .client import MatrixAdminClient
+from .config_schema import ConfigError, load_config, validate_config
 from .reconciler import Reconciler
-
 
 _ACTION_ICONS = {
     "create": "+",
@@ -306,15 +305,20 @@ def config_validate(config_path):
                 w += len(room.watchers)
         for child in space.children.values():
             cs, cr, cb, cw = _count_space(child)
-            s += cs; r += cr; b += cb; w += cw
+            s += cs
+            r += cr
+            b += cb
+            w += cw
         return s, r, b, w
 
     space_count = room_count = bridge_count = watcher_count = 0
     for c in cfg.communities:
         for s in c.spaces.values():
             cs, cr, cb, cw = _count_space(s)
-            space_count += cs; room_count += cr
-            bridge_count += cb; watcher_count += cw
+            space_count += cs
+            room_count += cr
+            bridge_count += cb
+            watcher_count += cw
 
     click.echo(
         f"Config valid: {_plural(len(cfg.communities), 'community', 'communities')}, "

@@ -1,15 +1,16 @@
 """Tests for config loading and validation."""
 
+from pathlib import Path
+
 import pytest
 
 from src.admin.config_schema import (
-    load_config,
-    validate_config,
-    KnarrConfig,
     CommunityConfig,
     ConfigError,
+    KnarrConfig,
+    load_config,
+    validate_config,
 )
-
 
 VALID_INDEX = {
     "server_name": "knarr.local",
@@ -172,6 +173,75 @@ def test_room_with_watcher_config():
     community = CommunityConfig.from_dict(community_with_watcher)
     room = community.spaces["s"].rooms["watched"]
     assert room.watchers["reddit"]["subreddit"] == "Terasology"
+
+
+def test_validate_rejects_duplicate_room_keys_across_spaces():
+    """Room keys must be globally unique — collisions break _find_room()."""
+    dup_keys = {
+        **VALID_COMMUNITY,
+        "spaces": {
+            "space-a": {
+                "name": "A", "visibility": "private", "members": [], "rooms": {
+                    "general": {"alias": "general-a", "name": "General A"},
+                },
+            },
+            "space-b": {
+                "name": "B", "visibility": "private", "members": [], "rooms": {
+                    "general": {"alias": "general-b", "name": "General B"},
+                },
+            },
+        },
+    }
+    config = KnarrConfig.from_dict(VALID_INDEX, community_loader=lambda p: dup_keys)
+    with pytest.raises(ConfigError, match="Duplicate room key: general"):
+        validate_config(config)
+
+
+def test_validate_rejects_duplicate_space_keys():
+    """Space keys must be globally unique too — same reason."""
+    dup_space_keys = {
+        **VALID_COMMUNITY,
+        "spaces": {
+            "outer-a": {
+                "name": "A", "visibility": "private", "members": [], "rooms": {},
+                "spaces": {"inner": {"name": "Inner A", "rooms": {}}},
+            },
+            "outer-b": {
+                "name": "B", "visibility": "private", "members": [], "rooms": {},
+                "spaces": {"inner": {"name": "Inner B", "rooms": {}}},
+            },
+        },
+    }
+    config = KnarrConfig.from_dict(VALID_INDEX, community_loader=lambda p: dup_space_keys)
+    with pytest.raises(ConfigError, match="Duplicate space key: inner"):
+        validate_config(config)
+
+
+def test_load_config_wraps_yaml_parse_error(tmp_path: Path):
+    """Malformed YAML should surface as ConfigError with file context."""
+    bad = tmp_path / "bad.yaml"
+    bad.write_text("server_name: knarr.local\n  bad indent: [unterminated")
+
+    with pytest.raises(ConfigError, match=r"Failed to parse YAML"):
+        load_config(str(bad))
+
+
+def test_load_config_rejects_non_dict_yaml(tmp_path: Path):
+    """A YAML list at the top level is not a valid config — raise ConfigError."""
+    bad = tmp_path / "list.yaml"
+    bad.write_text("- one\n- two\n")
+
+    with pytest.raises(ConfigError, match="must be a YAML mapping"):
+        load_config(str(bad))
+
+
+def test_load_config_rejects_empty_yaml(tmp_path: Path):
+    """An empty file gives yaml.safe_load -> None; reject explicitly."""
+    bad = tmp_path / "empty.yaml"
+    bad.write_text("")
+
+    with pytest.raises(ConfigError, match="empty"):
+        load_config(str(bad))
 
 
 def test_nested_spaces():

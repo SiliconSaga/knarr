@@ -4,13 +4,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.admin.reconciler import Reconciler, Action
 from src.admin.config_schema import (
-    KnarrConfig,
     CommunityConfig,
-    SpaceConfig,
+    KnarrConfig,
     RoomConfig,
+    SpaceConfig,
 )
+from src.admin.reconciler import Action, Reconciler
 
 
 def make_config(rooms=None, spaces=None):
@@ -71,10 +71,15 @@ def make_config(rooms=None, spaces=None):
 def mock_client():
     client = MagicMock()
     client.homeserver = "http://test:8008"
+    # admin_user is read by Reconciler._creator_mxid() to filter the creator
+    # out of invite lists; matches the "admin" user in make_config().
+    client.admin_user = "admin"
     # Default: nothing exists
     client.resolve_alias.return_value = None
     client.get_room_state.return_value = {}
     client.get_room_members.return_value = []
+    # Reconciler reads with_state (invite+join) for member diffs; default empty.
+    client.get_room_members_with_state.return_value = []
     client.get_room_state_event.return_value = None
     client.create_space.return_value = "!space:test.local"
     client.create_room.return_value = "!room:test.local"
@@ -101,11 +106,16 @@ def test_diff_creates_missing_room(mock_client):
     assert any(a.operation == "create" for a in room_actions)
 
 
+def _managed(key: str) -> dict:
+    """Build a marker payload that satisfies _managed_by_us for a given key."""
+    return {"config_key": key, "managed_by": "knarr-reconciler"}
+
+
 def test_diff_skips_existing_room(mock_client):
     mock_client.resolve_alias.return_value = "!existing:test.local"
     mock_client.get_room_state.return_value = {"name": "My Room", "topic": "Test"}
-    mock_client.get_room_members.return_value = ["@admin:test.local"]
-    mock_client.get_room_state_event.return_value = {"config_key": "test/my-room"}
+    mock_client.get_room_members_with_state.return_value = ["@admin:test.local"]
+    mock_client.get_room_state_event.return_value = _managed("my-room")
 
     config = make_config(rooms={
         "my-room": {"alias": "my-room", "name": "My Room", "topic": "Test", "members": ["admin"]},
@@ -120,8 +130,8 @@ def test_diff_skips_existing_room(mock_client):
 def test_diff_invites_missing_members(mock_client):
     mock_client.resolve_alias.return_value = "!existing:test.local"
     mock_client.get_room_state.return_value = {"name": "My Room"}
-    mock_client.get_room_members.return_value = ["@admin:test.local"]
-    mock_client.get_room_state_event.return_value = {"config_key": "test/my-room"}
+    mock_client.get_room_members_with_state.return_value = ["@admin:test.local"]
+    mock_client.get_room_state_event.return_value = _managed("my-room")
 
     config = make_config(rooms={
         "my-room": {
@@ -141,8 +151,8 @@ def test_apply_invite_uses_structured_target(mock_client):
     """Invite actions carry target/subject fields, not parsed from details."""
     mock_client.resolve_alias.return_value = "!existing:test.local"
     mock_client.get_room_state.return_value = {"name": "My Room"}
-    mock_client.get_room_members.return_value = []
-    mock_client.get_room_state_event.return_value = {"config_key": "my-room"}
+    mock_client.get_room_members_with_state.return_value = []
+    mock_client.get_room_state_event.return_value = _managed("my-room")
 
     config = make_config(rooms={
         "my-room": {
@@ -151,7 +161,7 @@ def test_apply_invite_uses_structured_target(mock_client):
         },
     })
     reconciler = Reconciler(mock_client, config)
-    report = reconciler.apply()
+    reconciler.apply()
 
     # The reconciler should have invited router via the room_id from resolve_alias
     mock_client.invite.assert_called()
@@ -163,8 +173,8 @@ def test_diff_room_with_custom_alias_keys_room_ids_consistently(mock_client):
     """When room.alias differs from key, _room_ids is keyed by resource, not alias."""
     mock_client.resolve_alias.return_value = "!found:test.local"
     mock_client.get_room_state.return_value = {"name": "X"}
-    mock_client.get_room_members.return_value = []
-    mock_client.get_room_state_event.return_value = {"config_key": "my-room"}
+    mock_client.get_room_members_with_state.return_value = []
+    mock_client.get_room_state_event.return_value = _managed("my-room")
 
     config = make_config(rooms={
         "my-room": {"alias": "different-alias", "name": "My Room"},
@@ -176,6 +186,115 @@ def test_diff_room_with_custom_alias_keys_room_ids_consistently(mock_client):
     # not by room.alias ("different-alias")
     assert "room:my-room" in reconciler._room_ids
     assert "different-alias" not in reconciler._room_ids
+
+
+def test_diff_treats_foreign_managed_marker_as_adopt(mock_client):
+    """A state event from a different reconciler should not be trusted as ours."""
+    mock_client.resolve_alias.return_value = "!existing:test.local"
+    mock_client.get_room_state.return_value = {"name": "My Room"}
+    mock_client.get_room_members_with_state.return_value = []
+    # Marker exists but managed_by is something else — could be a foreign tool
+    # or a stale payload. Treat it as drift, not as "we own this".
+    mock_client.get_room_state_event.return_value = {
+        "managed_by": "some-other-tool",
+        "config_key": "my-room",
+    }
+
+    config = make_config(rooms={
+        "my-room": {"alias": "my-room", "name": "My Room"},
+    })
+    reconciler = Reconciler(mock_client, config)
+    report = reconciler.diff()
+
+    room_actions = [a for a in report.actions if a.resource == "room:my-room"]
+    assert any(a.operation == "adopt" for a in room_actions)
+    assert not any(a.operation == "skip" for a in room_actions)
+
+
+def test_diff_treats_mismatched_config_key_as_adopt(mock_client):
+    """If the marker's config_key points at a different room, don't trust it."""
+    mock_client.resolve_alias.return_value = "!existing:test.local"
+    mock_client.get_room_state.return_value = {"name": "My Room"}
+    mock_client.get_room_members_with_state.return_value = []
+    mock_client.get_room_state_event.return_value = {
+        "managed_by": "knarr-reconciler",
+        "config_key": "some-other-room",
+    }
+
+    config = make_config(rooms={
+        "my-room": {"alias": "my-room", "name": "My Room"},
+    })
+    reconciler = Reconciler(mock_client, config)
+    report = reconciler.diff()
+
+    room_actions = [a for a in report.actions if a.resource == "room:my-room"]
+    assert any(a.operation == "adopt" for a in room_actions)
+    assert not any(a.operation == "skip" for a in room_actions)
+
+
+def test_diff_missing_room_does_not_emit_per_member_invites(mock_client):
+    """create_room handles invites; _diff_room must not duplicate them as actions."""
+    mock_client.resolve_alias.return_value = None  # room missing
+
+    config = make_config(rooms={
+        "my-room": {
+            "alias": "my-room", "name": "My Room",
+            "members": ["admin", "router"],
+        },
+    })
+    reconciler = Reconciler(mock_client, config)
+    report = reconciler.diff()
+
+    # Exactly one create action for the room, no separate invites.
+    room_actions = [a for a in report.actions if a.resource == "room:my-room"]
+    assert [a.operation for a in room_actions] == ["create"]
+
+
+def test_apply_create_room_seeds_invites_atomically(mock_client):
+    """Verify the missing-room create path passes invite= to create_room."""
+    mock_client.resolve_alias.return_value = None  # all missing
+
+    config = make_config(rooms={
+        "my-room": {
+            "alias": "my-room", "name": "My Room",
+            "members": ["admin", "router"],
+        },
+    })
+    reconciler = Reconciler(mock_client, config)
+    reconciler.apply()
+
+    # create_room should have been called with invite including router (admin
+    # is filtered out as the creator).
+    create_calls = [
+        c for c in mock_client.create_room.call_args_list
+        if c.kwargs.get("alias") == "my-room"
+    ]
+    assert create_calls, "create_room was not called for my-room"
+    invites = create_calls[0].kwargs.get("invite") or []
+    assert "@router:test.local" in invites
+    assert "@admin:test.local" not in invites  # creator filtered
+
+
+def test_apply_create_space_links_nested_space_to_parent(mock_client):
+    """When a child space is created, it should be linked under its parent."""
+    mock_client.resolve_alias.return_value = None  # all missing
+    mock_client.create_space.side_effect = ["!parent:test.local", "!child:test.local"]
+
+    config = make_config(spaces={
+        "child-space": {
+            "name": "Child Space",
+            "visibility": "private",
+            "rooms": {},
+        },
+    })
+    reconciler = Reconciler(mock_client, config)
+    reconciler.apply()
+
+    # add_space_child should be called with (parent_id, child_id)
+    add_child_calls = mock_client.add_space_child.call_args_list
+    assert any(
+        c.args == ("!parent:test.local", "!child:test.local") for c in add_child_calls
+    ), f"Expected child space linked to parent, got: {add_child_calls}"
 
 
 def test_diff_detects_bridge_needed(mock_client):

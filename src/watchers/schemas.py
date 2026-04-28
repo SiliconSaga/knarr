@@ -1,9 +1,8 @@
 """Kafka event envelope schemas for Knarr watchers."""
 
 import uuid
-from datetime import datetime, timezone
-from dataclasses import dataclass, field, asdict
-from typing import Optional
+from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
 
 
 @dataclass
@@ -17,7 +16,7 @@ class Source:
 class Content:
     type: str
     body: str
-    url: Optional[str] = None
+    url: str | None = None
 
 
 @dataclass
@@ -26,7 +25,7 @@ class WatchAlert:
     content: Content
     event_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     timestamp: str = field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+        default_factory=lambda: datetime.now(UTC).isoformat()
     )
 
     def to_kafka_dict(self) -> dict:

@@ -17,8 +17,22 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24.0",
     "pytest-bdd>=7.0",
+    "ruff>=0.6",
 ]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+# Pyflakes (F), pycodestyle errors (E), import sorting (I), pyupgrade (UP),
+# bugbear (B). Add more selectively if/when reviewers ask.
+select = ["E", "F", "I", "UP", "B"]
+ignore = [
+    "E501",  # line-length is enforced separately by formatter, not the linter
+    "B008",  # Click decorators legitimately call functions in defaults
+]

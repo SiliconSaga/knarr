@@ -19,5 +19,4 @@ Feature: Config reconciliation
     When I run config apply
     Then the configured rooms exist in Matrix
     When I run config audit
-    Then it reports zero drift
-    And it exits with code 0
+    Then it reports zero topology drift

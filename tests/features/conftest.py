@@ -7,7 +7,6 @@ import pytest
 from src.admin.cli import client_from_env
 from src.admin.config_schema import load_config
 
-
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 

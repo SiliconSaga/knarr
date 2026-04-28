@@ -1,11 +1,8 @@
 """Tests for MatrixAdminClient — uses httpx mock transport, no live server needed."""
 
 import json
-import time
-from unittest.mock import patch
 
 import httpx
-import pytest
 
 from src.admin.client import MatrixAdminClient
 
@@ -206,6 +203,27 @@ def test_get_room_members():
         }),
     })
     members = client.get_room_members("!room:test")
+    assert sorted(members) == ["@alice:test", "@bob:test"]
+
+
+def test_get_room_members_with_state_includes_invited():
+    """The reconciler relies on this to avoid re-inviting users with pending invites."""
+    client = make_client({
+        "/login": (200, {"access_token": "tok"}),
+        "/members": (200, {
+            "chunk": [
+                {"type": "m.room.member", "state_key": "@alice:test",
+                 "content": {"membership": "join"}},
+                {"type": "m.room.member", "state_key": "@bob:test",
+                 "content": {"membership": "invite"}},
+                {"type": "m.room.member", "state_key": "@carol:test",
+                 "content": {"membership": "leave"}},
+                {"type": "m.room.member", "state_key": "@dave:test",
+                 "content": {"membership": "ban"}},
+            ],
+        }),
+    })
+    members = client.get_room_members_with_state("!room:test")
     assert sorted(members) == ["@alice:test", "@bob:test"]
 
 

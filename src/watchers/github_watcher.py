@@ -1,11 +1,10 @@
 """GitHub watcher — polls notifications for watched repos and publishes alerts to Kafka."""
 
 import logging
-from typing import Optional
 
 import httpx
 
-from .schemas import WatchAlert, Source, Content
+from .schemas import Content, Source, WatchAlert
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +15,7 @@ class GitHubWatcher:
         repos: list[str],
         kafka_bootstrap: str,
         kafka_topic: str,
-        github_token: Optional[str] = None,
+        github_token: str | None = None,
         poll_interval_seconds: int = 300,
     ):
         self.repos = repos
@@ -33,7 +32,7 @@ class GitHubWatcher:
             .replace("/pulls/", "/pull/")
         )
 
-    def parse_notification(self, notification: dict) -> Optional[WatchAlert]:
+    def parse_notification(self, notification: dict) -> WatchAlert | None:
         """Parse a GitHub notification into a WatchAlert. Returns None if already seen."""
         notif_id = notification["id"]
 

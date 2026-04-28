@@ -16,9 +16,9 @@ spaces:
         alias: social-watch
         name: "#social-watch"
         topic: "Platform monitoring alerts"
-        # router posts watcher alerts; add admin/knarr/cervator here if you
-        # want them to see the room without going through the parent space.
-        members: [router]
+        # router posts watcher alerts; admin/knarr are explicit here because
+        # the reconciler does not inherit space.members into child rooms.
+        members: [admin, knarr, router]
         watchers:
           reddit:
             subreddit: Terasology

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Optional
 
 import yaml
 
@@ -19,8 +19,8 @@ class RoomConfig:
     name: str
     topic: str = ""
     members: list[str] = field(default_factory=list)
-    bridge: Optional[dict] = None
-    watchers: Optional[dict] = None
+    bridge: dict | None = None
+    watchers: dict | None = None
 
     @classmethod
     def from_dict(cls, key: str, data: dict) -> RoomConfig:
@@ -109,11 +109,32 @@ class KnarrConfig:
         )
 
 
+def _load_yaml_dict(path: Path) -> dict:
+    """Read a YAML file, surface parse errors with file context, and require a dict.
+
+    Raw ``yaml.safe_load`` raises ``yaml.YAMLError`` on malformed input and can
+    return ``None`` or non-dict values for empty/invalid files; both bubble up
+    later as confusing ``TypeError``s. Wrap them so the CLI can present a clean
+    ConfigError.
+    """
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+    except yaml.YAMLError as e:
+        raise ConfigError(f"Failed to parse YAML at {path}: {e}") from e
+    if data is None:
+        raise ConfigError(f"Config at {path} is empty")
+    if not isinstance(data, dict):
+        raise ConfigError(
+            f"Config at {path} must be a YAML mapping, got {type(data).__name__}"
+        )
+    return data
+
+
 def load_config(config_path: str) -> KnarrConfig:
     """Load the index config and all referenced community configs."""
     config_dir = Path(config_path).parent
-    with open(config_path, encoding="utf-8") as f:
-        index_data = yaml.safe_load(f)
+    index_data = _load_yaml_dict(Path(config_path))
 
     def community_loader(rel_path: str) -> dict:
         full_path = config_dir / rel_path
@@ -121,8 +142,7 @@ def load_config(config_path: str) -> KnarrConfig:
             full_path = config_dir.parent / rel_path
         if not full_path.exists():
             raise ConfigError(f"Community config not found: {rel_path}")
-        with open(full_path, encoding="utf-8") as f:
-            return yaml.safe_load(f)
+        return _load_yaml_dict(full_path)
 
     return KnarrConfig.from_dict(index_data, community_loader)
 
@@ -133,6 +153,23 @@ def _collect_aliases(space: SpaceConfig) -> list[str]:
     for child in space.children.values():
         aliases.extend(_collect_aliases(child))
     return aliases
+
+
+def _collect_room_keys(space: SpaceConfig) -> list[str]:
+    """Recursively collect all room keys from a space."""
+    keys = list(space.rooms.keys())
+    for child in space.children.values():
+        keys.extend(_collect_room_keys(child))
+    return keys
+
+
+def _collect_space_keys(space: SpaceConfig) -> list[str]:
+    """Recursively collect all child-space keys nested under this space."""
+    keys: list[str] = []
+    for child_key, child in space.children.items():
+        keys.append(child_key)
+        keys.extend(_collect_space_keys(child))
+    return keys
 
 
 def _collect_user_refs(space: SpaceConfig) -> set[str]:
@@ -150,21 +187,43 @@ def validate_config(config: KnarrConfig) -> None:
 
     Accumulates all errors and raises a single ConfigError with the full set,
     so users can fix everything in one pass.
+
+    Room and space keys must be globally unique (within their type) because the
+    reconciler keys ``Action.resource`` and ``_room_ids`` by local key alone —
+    a collision would silently apply changes to the wrong room.
     """
     all_aliases: list[str] = []
+    all_room_keys: list[str] = []
+    all_space_keys: list[str] = []
     all_user_refs: set[str] = set()
 
     for community in config.communities:
-        for space in community.spaces.values():
+        for space_key, space in community.spaces.items():
             all_aliases.extend(_collect_aliases(space))
+            all_room_keys.extend(_collect_room_keys(space))
+            all_space_keys.append(space_key)
+            all_space_keys.extend(_collect_space_keys(space))
             all_user_refs.update(_collect_user_refs(space))
 
     errors: list[str] = []
-    seen: set[str] = set()
+
+    seen_aliases: set[str] = set()
     for alias in all_aliases:
-        if alias in seen:
+        if alias in seen_aliases:
             errors.append(f"Duplicate room alias: {alias}")
-        seen.add(alias)
+        seen_aliases.add(alias)
+
+    seen_room_keys: set[str] = set()
+    for key in all_room_keys:
+        if key in seen_room_keys:
+            errors.append(f"Duplicate room key: {key} (room keys must be globally unique)")
+        seen_room_keys.add(key)
+
+    seen_space_keys: set[str] = set()
+    for key in all_space_keys:
+        if key in seen_space_keys:
+            errors.append(f"Duplicate space key: {key} (space keys must be globally unique)")
+        seen_space_keys.add(key)
 
     known = set(config.users.keys())
     for ref in sorted(all_user_refs):

@@ -6,12 +6,11 @@ import logging
 import traceback
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Optional
 
 import httpx
 
 from .client import MatrixAdminClient
-from .config_schema import KnarrConfig, SpaceConfig, RoomConfig
+from .config_schema import KnarrConfig, RoomConfig, SpaceConfig
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +29,8 @@ class Action:
     resource: str
     operation: str  # create, update, invite, bridge, config, skip, adopt
     details: str
-    target: Optional[str] = None
-    subject: Optional[str] = None
+    target: str | None = None
+    subject: str | None = None
 
 
 @dataclass
@@ -73,9 +72,7 @@ class Reconciler:
         report = ReconcileReport()
         for community in self.config.communities:
             for space_key, space in community.spaces.items():
-                self._diff_space(
-                    space_key, space, community.community, None, report
-                )
+                self._diff_space(space_key, space, report)
         self._diff_watchers(report)
         return report
 
@@ -101,12 +98,24 @@ class Reconciler:
             "last_reconciled": datetime.now(UTC).isoformat(),
         }
 
+    def _managed_by_us(self, event: dict | None, expected_key: str) -> bool:
+        """True only if the org.knarr.managed marker matches our payload contract.
+
+        A bare truthy check would treat any state event as "managed", including
+        markers from a different reconciler or for a different config key — which
+        could cause us to skip reconciliation on the wrong room.
+        """
+        if not isinstance(event, dict):
+            return False
+        return (
+            event.get("managed_by") == "knarr-reconciler"
+            and event.get("config_key") == expected_key
+        )
+
     def _diff_space(
         self,
         key: str,
         space: SpaceConfig,
-        community: str,
-        parent_alias: Optional[str],
         report: ReconcileReport,
     ) -> None:
         alias = self._full_alias(key)
@@ -118,13 +127,14 @@ class Reconciler:
         else:
             self._room_ids[resource] = room_id
             managed = self.client.get_room_state_event(room_id, "org.knarr.managed")
-            if managed:
+            if self._managed_by_us(managed, key):
                 report.actions.append(Action(resource, "skip", f"already exists ({alias})"))
             else:
                 report.actions.append(Action(resource, "adopt", f"exists but unmanaged ({alias})"))
 
-            # Check membership
-            current_members = self.client.get_room_members(room_id)
+            # Check membership — count joined AND already-invited users so we
+            # don't re-invite anyone who simply hasn't accepted yet.
+            current_members = self.client.get_room_members_with_state(room_id)
             for member_ref in space.members:
                 user_id = self._resolve_user(member_ref)
                 if user_id not in current_members:
@@ -140,17 +150,16 @@ class Reconciler:
 
         # Diff rooms within this space
         for room_key, room in space.rooms.items():
-            self._diff_room(room_key, room, community, key, report)
+            self._diff_room(room_key, room, key, report)
 
         # Diff child spaces
         for child_key, child_space in space.children.items():
-            self._diff_space(child_key, child_space, community, key, report)
+            self._diff_space(child_key, child_space, report)
 
     def _diff_room(
         self,
         key: str,
         room: RoomConfig,
-        community: str,
         parent_space_key: str,
         report: ReconcileReport,
     ) -> None:
@@ -159,35 +168,24 @@ class Reconciler:
         room_id = self.client.resolve_alias(alias)
 
         if room_id is None:
+            # _apply_create_room passes invite=members to createRoom, so members
+            # are seeded as part of room creation. Don't emit duplicate per-member
+            # invite actions here — Synapse would 4xx on "already invited" and
+            # blow up the apply run.
             report.actions.append(
                 Action(resource, "create", f'"{room.name}" in {parent_space_key}')
             )
-            # Members are invited as part of create; the creator (admin) is
-            # auto-joined by Synapse so we skip them here.
-            creator_mxid = self._creator_mxid()
-            for member_ref in room.members:
-                user_id = self._resolve_user(member_ref)
-                if user_id == creator_mxid:
-                    continue
-                report.actions.append(
-                    Action(
-                        resource,
-                        "invite",
-                        f"{user_id} to {key}",
-                        target=resource,
-                        subject=user_id,
-                    )
-                )
         else:
             self._room_ids[resource] = room_id
             managed = self.client.get_room_state_event(room_id, "org.knarr.managed")
-            if managed:
+            if self._managed_by_us(managed, key):
                 report.actions.append(Action(resource, "skip", f"already exists ({alias})"))
             else:
                 report.actions.append(Action(resource, "adopt", f"exists but unmanaged ({alias})"))
 
-            # Check membership
-            current_members = self.client.get_room_members(room_id)
+            # Check membership — count joined AND already-invited users so we
+            # don't re-invite anyone who simply hasn't accepted yet.
+            current_members = self.client.get_room_members_with_state(room_id)
             for member_ref in room.members:
                 user_id = self._resolve_user(member_ref)
                 if user_id not in current_members:
@@ -259,7 +257,7 @@ class Reconciler:
                 )
 
     def _apply_create_space(self, action: Action) -> None:
-        """Create a space and record its room ID."""
+        """Create a space, link it to its parent space if nested, and mark it managed."""
         key = action.resource.split(":", 1)[1]
         space = self._find_space(key)
         if not space:
@@ -279,6 +277,16 @@ class Reconciler:
             invite=members,
         )
         self._room_ids[action.resource] = room_id
+
+        # Link nested spaces under their parent so the topology shows up in clients.
+        # _apply_actions iterates in tree-traversal order, so the parent's room_id
+        # is already cached by the time we reach a child.
+        parent_key = self._find_parent_space_key_for_space(key)
+        if parent_key:
+            parent_resource = f"space:{parent_key}"
+            if parent_resource in self._room_ids:
+                self.client.add_space_child(self._room_ids[parent_resource], room_id)
+
         self.client.set_room_state_event(
             room_id,
             "org.knarr.managed",
@@ -403,7 +411,7 @@ class Reconciler:
 
     # --- Helper methods to find config entries ---
 
-    def _find_space(self, key: str) -> Optional[SpaceConfig]:
+    def _find_space(self, key: str) -> SpaceConfig | None:
         for community in self.config.communities:
             for sk, space in community.spaces.items():
                 if sk == key:
@@ -413,7 +421,7 @@ class Reconciler:
                     return found
         return None
 
-    def _find_space_recursive(self, key: str, space: SpaceConfig) -> Optional[SpaceConfig]:
+    def _find_space_recursive(self, key: str, space: SpaceConfig) -> SpaceConfig | None:
         for ck, child in space.children.items():
             if ck == key:
                 return child
@@ -422,7 +430,7 @@ class Reconciler:
                 return found
         return None
 
-    def _find_room(self, key: str) -> Optional[RoomConfig]:
+    def _find_room(self, key: str) -> RoomConfig | None:
         for community in self.config.communities:
             for space in community.spaces.values():
                 found = self._find_room_in_space(key, space)
@@ -430,7 +438,7 @@ class Reconciler:
                     return found
         return None
 
-    def _find_room_in_space(self, key: str, space: SpaceConfig) -> Optional[RoomConfig]:
+    def _find_room_in_space(self, key: str, space: SpaceConfig) -> RoomConfig | None:
         if key in space.rooms:
             return space.rooms[key]
         for child in space.children.values():
@@ -439,7 +447,7 @@ class Reconciler:
                 return found
         return None
 
-    def _find_parent_space_key(self, room_key: str) -> Optional[str]:
+    def _find_parent_space_key(self, room_key: str) -> str | None:
         for community in self.config.communities:
             for sk, space in community.spaces.items():
                 if room_key in space.rooms:
@@ -449,11 +457,33 @@ class Reconciler:
                     return found
         return None
 
-    def _find_parent_in_children(self, room_key: str, space: SpaceConfig) -> Optional[str]:
+    def _find_parent_in_children(self, room_key: str, space: SpaceConfig) -> str | None:
         for ck, child in space.children.items():
             if room_key in child.rooms:
                 return ck
             found = self._find_parent_in_children(room_key, child)
+            if found:
+                return found
+        return None
+
+    def _find_parent_space_key_for_space(self, child_space_key: str) -> str | None:
+        """Return the parent space key for a nested space, or None if top-level."""
+        for community in self.config.communities:
+            for sk, space in community.spaces.items():
+                if child_space_key in space.children:
+                    return sk
+                found = self._find_parent_space_in_children(child_space_key, space)
+                if found:
+                    return found
+        return None
+
+    def _find_parent_space_in_children(
+        self, child_space_key: str, space: SpaceConfig
+    ) -> str | None:
+        for ck, child in space.children.items():
+            if child_space_key in child.children:
+                return ck
+            found = self._find_parent_space_in_children(child_space_key, child)
             if found:
                 return found
         return None
