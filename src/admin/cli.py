@@ -38,6 +38,13 @@ def _plural(n: int, singular: str, plural: str) -> str:
     return f"{n} {singular if n == 1 else plural}"
 
 
+def _walk_rooms(space):
+    """Yield every room in a space, recursing through nested children."""
+    yield from space.rooms.values()
+    for child in space.children.values():
+        yield from _walk_rooms(child)
+
+
 def client_from_env(
     user_var: str,
     password_var: str,
@@ -300,7 +307,9 @@ def config_validate(config_path):
         s, r, b, w = 1, len(space.rooms), 0, 0
         for room in space.rooms.values():
             if room.bridge:
-                b += 1
+                # Count one per bridge type so the validate output matches
+                # what reconcile/apply does (one action per bridge type).
+                b += len(room.bridge)
             if room.watchers:
                 w += len(room.watchers)
         for child in space.children.values():
@@ -384,6 +393,21 @@ def config_apply(config_path, allow_missing_secrets):
     client = get_client()
     bridge_mgr = None
     mgmt_room = os.environ.get("KNARR_MANAGEMENT_ROOM")
+    has_bridge_config = any(
+        room.bridge
+        for community in cfg.communities
+        for space in community.spaces.values()
+        for room in _walk_rooms(space)
+    )
+    if has_bridge_config and not mgmt_room:
+        # Without KNARR_MANAGEMENT_ROOM the reconciler silently no-ops bridge
+        # actions; with bridge config present that's a partial converge with
+        # exit 0, which is worse than failing fast.
+        click.echo(
+            "Error: KNARR_MANAGEMENT_ROOM is required when bridge config is present.",
+            err=True,
+        )
+        sys.exit(1)
     if mgmt_room:
         bridge_mgr = get_bridge_manager()
 

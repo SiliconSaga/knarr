@@ -235,6 +235,22 @@ def test_load_config_rejects_non_dict_yaml(tmp_path: Path):
         load_config(str(bad))
 
 
+def test_from_dict_rejects_communities_as_string():
+    """`communities` must be a list of paths, not a single string."""
+    bad = {**VALID_INDEX, "communities": "config/test.yaml"}
+    with pytest.raises(ConfigError, match="communities"):
+        KnarrConfig.from_dict(bad, community_loader=lambda _: VALID_COMMUNITY)
+
+
+def test_from_dict_rejects_communities_as_null():
+    """`communities` is required to be a list when present; null is rejected."""
+    # `_require_str_list(None, ...)` returns []; that's the existing
+    # contract for "field absent". Verify the contract holds.
+    cfg = {**VALID_INDEX, "communities": None}
+    parsed = KnarrConfig.from_dict(cfg, community_loader=lambda _: VALID_COMMUNITY)
+    assert parsed.communities == []
+
+
 def test_load_config_rejects_empty_yaml(tmp_path: Path):
     """An empty file gives yaml.safe_load -> None; reject explicitly."""
     bad = tmp_path / "empty.yaml"

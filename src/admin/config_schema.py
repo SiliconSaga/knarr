@@ -138,8 +138,9 @@ class KnarrConfig:
         if "server_name" not in data:
             raise ConfigError("server_name is required in the index config")
 
+        community_paths = _require_str_list(data.get("communities"), "communities")
         communities = []
-        for path in data.get("communities", []):
+        for path in community_paths:
             community_data = community_loader(path)
             communities.append(CommunityConfig.from_dict(community_data))
 

@@ -109,7 +109,11 @@ def test_join_room_posts_to_join_endpoint():
         if "/login" in request.url.path:
             return httpx.Response(200, json={"access_token": "tok"})
         if "/join" in request.url.path:
-            requests_seen.append((request.method, request.url.path))
+            requests_seen.append({
+                "method": request.method,
+                "path": request.url.path,
+                "raw_path": request.url.raw_path.decode("ascii"),
+            })
             return httpx.Response(200, json={"room_id": "!room:test"})
         return httpx.Response(404, json={})
 
@@ -118,11 +122,13 @@ def test_join_room_posts_to_join_endpoint():
 
     client.join_room("!room:test")
     assert requests_seen, "join_room did not hit the homeserver"
-    method, path = requests_seen[-1]
-    assert method == "POST"
-    # Path is URL-encoded by the client; check the meaningful tokens are there.
-    assert "join" in path
-    assert "room" in path
+    captured = requests_seen[-1]
+    assert captured["method"] == "POST"
+    # The room id must be percent-encoded in the request path so the colon
+    # in "!room:test" doesn't terminate a path segment.
+    assert "%21room%3Atest" in captured["raw_path"]
+    # And the path must end with /join (not /joined_members or similar).
+    assert captured["raw_path"].rstrip("/").endswith("/join")
 
 
 def test_send_message_returns_event_id():
