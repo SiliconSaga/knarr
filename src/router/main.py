@@ -13,7 +13,6 @@ Environment variables:
 """
 
 import asyncio
-import json
 import logging
 import os
 import signal
@@ -21,7 +20,7 @@ import signal
 from confluent_kafka import Consumer, KafkaError
 from nio import AsyncClient, LoginResponse
 
-from .kafka_consumer import format_alert_message, deserialize_alert
+from .kafka_consumer import deserialize_alert, format_alert_message
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)

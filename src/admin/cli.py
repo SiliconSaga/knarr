@@ -18,28 +18,72 @@ import sys
 
 import click
 
-from .client import MatrixAdminClient
 from .bridge import BridgeManager
+from .client import MatrixAdminClient
+from .config_schema import ConfigError, load_config, validate_config
+from .reconciler import Reconciler
+
+_ACTION_ICONS = {
+    "create": "+",
+    "skip": "=",
+    "invite": ">",
+    "bridge": "~",
+    "noop": ".",
+    "adopt": "!",
+    "error": "X",
+}
+
+
+def _plural(n: int, singular: str, plural: str) -> str:
+    return f"{n} {singular if n == 1 else plural}"
+
+
+def _walk_rooms(space):
+    """Yield every room in a space, recursing through nested children."""
+    yield from space.rooms.values()
+    for child in space.children.values():
+        yield from _walk_rooms(child)
+
+
+def client_from_env(
+    user_var: str,
+    password_var: str,
+    default_user: str,
+    on_missing_password,
+) -> MatrixAdminClient:
+    """Construct a MatrixAdminClient from environment variables.
+
+    ``on_missing_password`` is called when the password env var is unset and
+    decides what to do (CLI: print error + sys.exit; tests: pytest.skip).
+    Centralised so a future env var change lands in one place.
+    """
+    homeserver = os.environ.get("KNARR_HOMESERVER", "http://matrix.knarr.local")
+    user = os.environ.get(user_var, default_user)
+    password = os.environ.get(password_var)
+    if not password:
+        on_missing_password()
+    return MatrixAdminClient(homeserver, user, password)
+
+
+def _abort_missing(env_var: str):
+    def _abort():
+        click.echo(f"Error: {env_var} is required.", err=True)
+        sys.exit(1)
+    return _abort
 
 
 def get_client() -> MatrixAdminClient:
-    homeserver = os.environ.get("KNARR_HOMESERVER", "http://matrix.knarr.local")
-    user = os.environ.get("KNARR_ADMIN_USER", "admin")
-    password = os.environ.get("KNARR_ADMIN_PASSWORD")
-    if not password:
-        click.echo("Error: KNARR_ADMIN_PASSWORD is required.", err=True)
-        sys.exit(1)
-    return MatrixAdminClient(homeserver, user, password)
+    return client_from_env(
+        "KNARR_ADMIN_USER", "KNARR_ADMIN_PASSWORD", "admin",
+        _abort_missing("KNARR_ADMIN_PASSWORD"),
+    )
 
 
 def get_bridge_client() -> MatrixAdminClient:
-    homeserver = os.environ.get("KNARR_HOMESERVER", "http://matrix.knarr.local")
-    user = os.environ.get("KNARR_BRIDGE_USER", "knarr")
-    password = os.environ.get("KNARR_BRIDGE_PASSWORD")
-    if not password:
-        click.echo("Error: KNARR_BRIDGE_PASSWORD is required.", err=True)
-        sys.exit(1)
-    return MatrixAdminClient(homeserver, user, password)
+    return client_from_env(
+        "KNARR_BRIDGE_USER", "KNARR_BRIDGE_PASSWORD", "knarr",
+        _abort_missing("KNARR_BRIDGE_PASSWORD"),
+    )
 
 
 def get_bridge_manager() -> BridgeManager:
@@ -236,6 +280,155 @@ def bridge_logout():
     mgr = get_bridge_manager()
     result = mgr.logout()
     click.echo(result)
+
+
+# --- Config commands ---
+
+@cli.group()
+def config():
+    """GitOps config reconciliation."""
+
+
+@config.command("validate")
+@click.option("--config", "config_path", default="config/knarr.yaml", help="Config file path")
+def config_validate(config_path):
+    """Validate config syntax without touching Matrix."""
+    try:
+        cfg = load_config(config_path)
+        validate_config(cfg)
+    except ConfigError as e:
+        click.echo(f"Config error: {e}", err=True)
+        sys.exit(1)
+    except FileNotFoundError as e:
+        click.echo(f"File not found: {e}", err=True)
+        sys.exit(1)
+
+    def _count_space(space):
+        s, r, b, w = 1, len(space.rooms), 0, 0
+        for room in space.rooms.values():
+            if room.bridge:
+                # Count one per bridge type so the validate output matches
+                # what reconcile/apply does (one action per bridge type).
+                b += len(room.bridge)
+            if room.watchers:
+                w += len(room.watchers)
+        for child in space.children.values():
+            cs, cr, cb, cw = _count_space(child)
+            s += cs
+            r += cr
+            b += cb
+            w += cw
+        return s, r, b, w
+
+    space_count = room_count = bridge_count = watcher_count = 0
+    for c in cfg.communities:
+        for s in c.spaces.values():
+            cs, cr, cb, cw = _count_space(s)
+            space_count += cs
+            room_count += cr
+            bridge_count += cb
+            watcher_count += cw
+
+    click.echo(
+        f"Config valid: {_plural(len(cfg.communities), 'community', 'communities')}, "
+        f"{_plural(space_count, 'space', 'spaces')}, "
+        f"{_plural(room_count, 'room', 'rooms')}, "
+        f"{_plural(bridge_count, 'bridge', 'bridges')}, "
+        f"{_plural(watcher_count, 'watcher', 'watchers')}"
+    )
+
+
+@config.command("audit")
+@click.option("--config", "config_path", default="config/knarr.yaml", help="Config file path")
+def config_audit(config_path):
+    """Dry-run: report what would change without making changes."""
+    try:
+        cfg = load_config(config_path)
+        validate_config(cfg)
+    except (ConfigError, FileNotFoundError) as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+    client = get_client()
+    reconciler = Reconciler(client, cfg)
+    report = reconciler.diff()
+
+    click.echo(f"Loading config: {config_path} ({_plural(len(cfg.communities), 'community', 'communities')})")
+    click.echo("Reading Matrix state...\n")
+
+    for action in report.actions:
+        click.echo(f"  [{_ACTION_ICONS.get(action.operation, '?')}] {action.resource:<28} {action.operation:<8} {action.details}")
+
+    click.echo(f"\nAudit: {report.summary()}")
+    if report.has_drift:
+        sys.exit(2)
+
+
+@config.command("apply")
+@click.option("--config", "config_path", default="config/knarr.yaml", help="Config file path")
+@click.option("--allow-missing-secrets", is_flag=True,
+              help="Proceed even when configured secrets aren't set in the environment")
+def config_apply(config_path, allow_missing_secrets):
+    """Apply config: converge live state to match desired state."""
+    try:
+        cfg = load_config(config_path)
+        validate_config(cfg)
+    except (ConfigError, FileNotFoundError) as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+    # Validate secrets are available — fail by default to avoid partial mutations
+    missing = [
+        (name, env_var)
+        for name, env_var in cfg.secrets.items()
+        if not os.environ.get(env_var)
+    ]
+    if missing:
+        for name, env_var in missing:
+            click.echo(f"Missing secret '{name}' ({env_var}) in environment", err=True)
+        if not allow_missing_secrets:
+            click.echo("Aborting. Re-run with --allow-missing-secrets to proceed anyway.", err=True)
+            sys.exit(1)
+
+    client = get_client()
+    bridge_mgr = None
+    mgmt_room = os.environ.get("KNARR_MANAGEMENT_ROOM")
+    has_bridge_config = any(
+        room.bridge
+        for community in cfg.communities
+        for space in community.spaces.values()
+        for room in _walk_rooms(space)
+    )
+    if has_bridge_config and not mgmt_room:
+        # Without KNARR_MANAGEMENT_ROOM the reconciler silently no-ops bridge
+        # actions; with bridge config present that's a partial converge with
+        # exit 0, which is worse than failing fast.
+        click.echo(
+            "Error: KNARR_MANAGEMENT_ROOM is required when bridge config is present.",
+            err=True,
+        )
+        sys.exit(1)
+    if mgmt_room:
+        bridge_mgr = get_bridge_manager()
+
+    reconciler = Reconciler(client, cfg, bridge_manager=bridge_mgr)
+
+    click.echo(f"Loading config: {config_path} ({_plural(len(cfg.communities), 'community', 'communities')})")
+    click.echo("Reading Matrix state...\n")
+
+    report = reconciler.apply()
+
+    for action in report.actions:
+        click.echo(f"  [{_ACTION_ICONS.get(action.operation, '?')}] {action.resource:<28} {action.operation:<8} {action.details}")
+
+    if report.errors:
+        click.echo("\nErrors:", err=True)
+        for error in report.errors:
+            click.echo(f"  {error}", err=True)
+
+    click.echo(f"\nApplied: {report.summary()}")
+    if report.errors:
+        sys.exit(1)
 
 
 # --- Token command ---

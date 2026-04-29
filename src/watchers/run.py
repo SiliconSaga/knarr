@@ -17,8 +17,8 @@ import signal
 
 from confluent_kafka import Producer
 
-from .reddit_watcher import RedditWatcher
 from .github_watcher import GitHubWatcher
+from .reddit_watcher import RedditWatcher
 from .schemas import WatchAlert
 
 logger = logging.getLogger(__name__)

@@ -1,11 +1,8 @@
 """Tests for MatrixAdminClient — uses httpx mock transport, no live server needed."""
 
 import json
-import time
-from unittest.mock import patch
 
 import httpx
-import pytest
 
 from src.admin.client import MatrixAdminClient
 
@@ -104,6 +101,36 @@ def test_invite_user():
     client.invite("!room:test", "@user:test")
 
 
+def test_join_room_posts_to_join_endpoint():
+    """Lock down join_room's HTTP shape — used by the bridge join flow."""
+    requests_seen = []
+
+    def capturing_handler(request: httpx.Request) -> httpx.Response:
+        if "/login" in request.url.path:
+            return httpx.Response(200, json={"access_token": "tok"})
+        if "/join" in request.url.path:
+            requests_seen.append({
+                "method": request.method,
+                "path": request.url.path,
+                "raw_path": request.url.raw_path.decode("ascii"),
+            })
+            return httpx.Response(200, json={"room_id": "!room:test"})
+        return httpx.Response(404, json={})
+
+    client = MatrixAdminClient("http://test:8008", "admin", "secret")
+    client._http = httpx.Client(transport=httpx.MockTransport(capturing_handler))
+
+    client.join_room("!room:test")
+    assert requests_seen, "join_room did not hit the homeserver"
+    captured = requests_seen[-1]
+    assert captured["method"] == "POST"
+    # The room id must be percent-encoded in the request path so the colon
+    # in "!room:test" doesn't terminate a path segment.
+    assert "%21room%3Atest" in captured["raw_path"]
+    # And the path must end with /join (not /joined_members or similar).
+    assert captured["raw_path"].rstrip("/").endswith("/join")
+
+
 def test_send_message_returns_event_id():
     client = make_client({
         "/login": (200, {"access_token": "tok"}),
@@ -152,3 +179,178 @@ def test_get_room_messages():
     messages = client.get_messages("!room:test", limit=5)
     assert len(messages) == 1
     assert messages[0]["content"]["body"] == "hello"
+
+
+def test_resolve_alias_returns_room_id():
+    client = make_client({
+        "/login": (200, {"access_token": "tok"}),
+        "/directory/room/": (200, {"room_id": "!found:test"}),
+    })
+    room_id = client.resolve_alias("#test:test")
+    assert room_id == "!found:test"
+
+
+def test_resolve_alias_returns_none_for_missing():
+    client = make_client({
+        "/login": (200, {"access_token": "tok"}),
+    })
+    room_id = client.resolve_alias("#missing:test")
+    assert room_id is None
+
+
+def test_resolve_alias_returns_none_on_400():
+    """Synapse returns 400 (not 404) for malformed/non-existent aliases."""
+    client = make_client({
+        "/login": (200, {"access_token": "tok"}),
+        "/directory/room/": (400, {"errcode": "M_NOT_FOUND"}),
+    })
+    assert client.resolve_alias("#weird:test") is None
+
+
+def test_get_room_state_returns_name_and_topic():
+    client = make_client({
+        "/login": (200, {"access_token": "tok"}),
+        "/state": (200, [
+            {"type": "m.room.name", "content": {"name": "My Room"}},
+            {"type": "m.room.topic", "content": {"topic": "A topic"}},
+            {"type": "m.room.join_rules", "content": {"join_rule": "invite"}},
+        ]),
+    })
+    state = client.get_room_state("!room:test")
+    assert state["name"] == "My Room"
+    assert state["topic"] == "A topic"
+    assert state["join_rule"] == "invite"
+
+
+def test_get_room_members():
+    client = make_client({
+        "/login": (200, {"access_token": "tok"}),
+        "/joined_members": (200, {
+            "joined": {
+                "@alice:test": {},
+                "@bob:test": {},
+            },
+        }),
+    })
+    members = client.get_room_members("!room:test")
+    assert sorted(members) == ["@alice:test", "@bob:test"]
+
+
+def test_get_room_members_with_state_includes_invited():
+    """The reconciler relies on this to avoid re-inviting users with pending invites."""
+    client = make_client({
+        "/login": (200, {"access_token": "tok"}),
+        "/members": (200, {
+            "chunk": [
+                {"type": "m.room.member", "state_key": "@alice:test",
+                 "content": {"membership": "join"}},
+                {"type": "m.room.member", "state_key": "@bob:test",
+                 "content": {"membership": "invite"}},
+                {"type": "m.room.member", "state_key": "@carol:test",
+                 "content": {"membership": "leave"}},
+                {"type": "m.room.member", "state_key": "@dave:test",
+                 "content": {"membership": "ban"}},
+            ],
+        }),
+    })
+    members = client.get_room_members_with_state("!room:test")
+    assert sorted(members) == ["@alice:test", "@bob:test"]
+
+
+def test_set_room_alias():
+    requests_seen = []
+
+    def capturing_handler(request: httpx.Request) -> httpx.Response:
+        if "/login" in request.url.path:
+            return httpx.Response(200, json={"access_token": "tok"})
+        if "/directory/room/" in request.url.path:
+            requests_seen.append({
+                "method": request.method,
+                "path": request.url.path,
+                "body": json.loads(request.content) if request.content else None,
+            })
+            return httpx.Response(200, json={})
+        return httpx.Response(404, json={})
+
+    client = MatrixAdminClient("http://test:8008", "admin", "secret")
+    client._http = httpx.Client(transport=httpx.MockTransport(capturing_handler))
+
+    client.set_room_alias("!room:test", "#myalias:test")
+    assert requests_seen[-1]["method"] == "PUT"
+    assert "myalias" in requests_seen[-1]["path"]
+    assert requests_seen[-1]["body"] == {"room_id": "!room:test"}
+
+
+def test_create_space_returns_room_id():
+    requests_seen = []
+
+    def capturing_handler(request: httpx.Request) -> httpx.Response:
+        if "/login" in request.url.path:
+            return httpx.Response(200, json={"access_token": "tok"})
+        if "/createRoom" in request.url.path:
+            requests_seen.append(json.loads(request.content))
+            return httpx.Response(200, json={"room_id": "!space:test"})
+        return httpx.Response(404, json={})
+
+    client = MatrixAdminClient("http://test:8008", "admin", "secret")
+    client._http = httpx.Client(transport=httpx.MockTransport(capturing_handler))
+
+    space_id = client.create_space("My Space", alias="myspace")
+    assert space_id == "!space:test"
+    body = requests_seen[0]
+    assert body["creation_content"]["type"] == "m.space"
+    assert "myspace" in body.get("room_alias_name", "")
+
+
+def test_add_space_child():
+    requests_seen = []
+
+    def capturing_handler(request: httpx.Request) -> httpx.Response:
+        if "/login" in request.url.path:
+            return httpx.Response(200, json={"access_token": "tok"})
+        if "/state/m.space.child" in request.url.path:
+            # raw_path preserves percent-encoding; .path is decoded.
+            requests_seen.append({
+                "raw_path": request.url.raw_path.decode("ascii"),
+                "body": json.loads(request.content),
+            })
+            return httpx.Response(200, json={"event_id": "$evt"})
+        return httpx.Response(404, json={})
+
+    client = MatrixAdminClient("http://test:8008", "admin", "secret")
+    client._http = httpx.Client(transport=httpx.MockTransport(capturing_handler))
+
+    # Use a host:port child id so we can verify the via field preserves both.
+    client.add_space_child("!space:test", "!child:test:8008")
+
+    captured = requests_seen[0]
+    # via must keep host:port intact, not just hostname.
+    assert captured["body"]["via"] == ["test:8008"]
+    # The state-key (child_id) must be percent-encoded in the path so colons
+    # in room IDs don't terminate path segments.
+    assert "%21child%3Atest%3A8008" in captured["raw_path"]
+
+
+def test_set_room_state_event():
+    client = make_client({
+        "/login": (200, {"access_token": "tok"}),
+        "/state/org.knarr.managed": (200, {"event_id": "$evt"}),
+    })
+    client.set_room_state_event("!room:test", "org.knarr.managed", {"key": "val"})
+
+
+def test_get_room_state_event_found():
+    client = make_client({
+        "/login": (200, {"access_token": "tok"}),
+        "/state/org.knarr.managed": (200, {"key": "val"}),
+    })
+    result = client.get_room_state_event("!room:test", "org.knarr.managed")
+    assert result == {"key": "val"}
+
+
+def test_get_room_state_event_missing():
+    client = make_client({
+        "/login": (200, {"access_token": "tok"}),
+    })
+    result = client.get_room_state_event("!room:test", "org.knarr.managed")
+    assert result is None

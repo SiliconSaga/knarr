@@ -1,0 +1,52 @@
+community: knarr-test
+display_name: "Knarr Test"
+
+# NOTE: Room members are NOT inherited from parent spaces. Each room must
+# list every user that should be a member. This config covers a small test
+# setup where only `router` watches alerts and admin/knarr operate the bridge.
+
+spaces:
+  knarr-test:
+    name: "Knarr Test"
+    visibility: private
+    members: [admin, knarr]
+
+    rooms:
+      social-watch:
+        alias: social-watch
+        name: "#social-watch"
+        topic: "Platform monitoring alerts"
+        # router posts watcher alerts; admin/knarr are explicit here because
+        # the reconciler does not inherit space.members into child rooms.
+        members: [admin, knarr, router]
+        watchers:
+          reddit:
+            subreddit: Terasology
+            interval_seconds: 21600
+          github:
+            repos: ["MovingBlocks/Terasology"]
+            interval_seconds: 21600
+            token_env: GITHUB_TOKEN
+
+      bridge-test:
+        alias: bridge-test
+        name: "#autoboros-testing [test]"
+        topic: "Bridged to Demicracy Discord #autoboros-testing"
+        members: [admin, knarr]
+        bridge:
+          discord:
+            # Designated test-only Discord channel in the SiliconSaga-controlled
+            # Demicracy guild. Anyone running `knarr config apply` will bridge
+            # to this specific channel. Replace before using elsewhere.
+            channel_id: "1342947610008485921"
+            relay: true
+
+    spaces:
+      feeds:
+        name: "Feeds"
+        visibility: private
+        rooms:
+          feed-reddit:
+            alias: feed-reddit
+            name: "#feed-reddit"
+            topic: "Reddit watcher alerts"

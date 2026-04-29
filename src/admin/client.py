@@ -3,7 +3,6 @@
 import os
 import uuid
 from pathlib import Path
-from typing import Optional
 from urllib.parse import quote
 
 import httpx
@@ -27,7 +26,7 @@ class MatrixAdminClient:
         self.homeserver = homeserver.rstrip("/")
         self.admin_user = admin_user
         self.admin_password = admin_password
-        self._token: Optional[str] = None
+        self._token: str | None = None
         self._http = httpx.Client(timeout=timeout)
 
     def _api(self, path: str) -> str:
@@ -78,15 +77,25 @@ class MatrixAdminClient:
         self,
         name: str,
         topic: str = "",
-        invite: Optional[list[str]] = None,
+        alias: str = "",
+        invite: list[str] | None = None,
+        *,
         private: bool = True,
         direct: bool = False,
     ) -> str:
-        """Create a Matrix room and return its room ID."""
+        """Create a Matrix room and return its room ID.
+
+        When ``alias`` is provided the room is created with that alias atomically
+        (Synapse rejects the call if the alias is taken). Prefer this over
+        creating the room and then calling ``set_room_alias`` separately —
+        the two-step path can leak orphan rooms on retry.
+        """
         body: dict = {
             "name": name,
             "preset": "private_chat" if private else "public_chat",
         }
+        if alias:
+            body["room_alias_name"] = alias
         if topic:
             body["topic"] = topic
         if invite:
@@ -102,6 +111,13 @@ class MatrixAdminClient:
             "POST",
             f"/_matrix/client/v3/rooms/{self._encode_room(room_id)}/invite",
             json={"user_id": user_id},
+        )
+
+    def join_room(self, room_id: str) -> None:
+        """Join a room as the authenticated user."""
+        self._authed_request(
+            "POST",
+            f"/_matrix/client/v3/rooms/{self._encode_room(room_id)}/join",
         )
 
     def send_message(self, room_id: str, body: str) -> str:
@@ -134,7 +150,7 @@ class MatrixAdminClient:
         username: str,
         password: str,
         admin: bool = False,
-        server_name: Optional[str] = None,
+        server_name: str | None = None,
     ) -> str:
         """Register a new user via Synapse v2 admin API. Returns the user ID.
 
@@ -198,3 +214,135 @@ class MatrixAdminClient:
         """List room IDs the authenticated user has joined."""
         resp = self._authed_request("GET", "/_matrix/client/v3/joined_rooms")
         return resp.json().get("joined_rooms", [])
+
+    def resolve_alias(self, alias: str) -> str | None:
+        """Resolve a room alias to a room ID. Returns None if not found."""
+        encoded_alias = quote(alias, safe="")
+        try:
+            resp = self._authed_request(
+                "GET", f"/_matrix/client/v3/directory/room/{encoded_alias}"
+            )
+            return resp.json().get("room_id")
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code in (400, 404):
+                return None
+            raise
+
+    def get_room_state(self, room_id: str) -> dict:
+        """Read room state: name, topic, join_rule. Returns a flat dict."""
+        resp = self._authed_request(
+            "GET",
+            f"/_matrix/client/v3/rooms/{self._encode_room(room_id)}/state",
+        )
+        events = resp.json()
+        result = {}
+        for event in events:
+            if event["type"] == "m.room.name":
+                result["name"] = event["content"].get("name", "")
+            elif event["type"] == "m.room.topic":
+                result["topic"] = event["content"].get("topic", "")
+            elif event["type"] == "m.room.join_rules":
+                result["join_rule"] = event["content"].get("join_rule", "")
+            elif event["type"] == "m.room.create":
+                result["room_type"] = event["content"].get("type", "")
+        return result
+
+    def get_room_members(self, room_id: str) -> list[str]:
+        """List user IDs of current room members."""
+        resp = self._authed_request(
+            "GET",
+            f"/_matrix/client/v3/rooms/{self._encode_room(room_id)}/joined_members",
+        )
+        return list(resp.json().get("joined", {}).keys())
+
+    def get_room_members_with_state(
+        self, room_id: str, states: tuple[str, ...] = ("invite", "join")
+    ) -> list[str]:
+        """List user IDs whose membership in the room is one of ``states``.
+
+        Defaults to invite + join so callers can treat "we already invited them
+        but they haven't accepted" the same as "joined" — useful for the
+        reconciler, which would otherwise re-emit invite actions on every audit
+        for any user who hasn't accepted yet.
+        """
+        resp = self._authed_request(
+            "GET",
+            f"/_matrix/client/v3/rooms/{self._encode_room(room_id)}/members",
+        )
+        return [
+            e["state_key"]
+            for e in resp.json().get("chunk", [])
+            if e.get("type") == "m.room.member"
+            and e.get("content", {}).get("membership") in states
+        ]
+
+    def set_room_alias(self, room_id: str, alias: str) -> None:
+        """Assign an alias to a room."""
+        encoded_alias = quote(alias, safe="")
+        self._authed_request(
+            "PUT",
+            f"/_matrix/client/v3/directory/room/{encoded_alias}",
+            json={"room_id": room_id},
+        )
+
+    def create_space(
+        self,
+        name: str,
+        alias: str = "",
+        topic: str = "",
+        invite: list[str] | None = None,
+        *,
+        private: bool = True,
+    ) -> str:
+        """Create a Matrix space (a room with m.space type). Returns room ID."""
+        body: dict = {
+            "name": name,
+            "preset": "private_chat" if private else "public_chat",
+            "creation_content": {"type": "m.space"},
+        }
+        if alias:
+            body["room_alias_name"] = alias
+        if topic:
+            body["topic"] = topic
+        if invite:
+            body["invite"] = invite
+        resp = self._authed_request("POST", "/_matrix/client/v3/createRoom", json=body)
+        return resp.json()["room_id"]
+
+    def add_space_child(self, space_id: str, child_id: str) -> None:
+        """Add a room or space as a child of a space."""
+        # split(":", 1) preserves host:port for federation-style room IDs
+        server = child_id.split(":", 1)[1] if ":" in child_id else "localhost"
+        self._authed_request(
+            "PUT",
+            f"/_matrix/client/v3/rooms/{self._encode_room(space_id)}"
+            f"/state/m.space.child/{quote(child_id, safe='')}",
+            json={"via": [server]},
+        )
+
+    def set_room_state_event(
+        self, room_id: str, event_type: str, content: dict
+    ) -> None:
+        """Write a custom state event to a room."""
+        self._authed_request(
+            "PUT",
+            f"/_matrix/client/v3/rooms/{self._encode_room(room_id)}"
+            f"/state/{quote(event_type, safe='')}",
+            json=content,
+        )
+
+    def get_room_state_event(
+        self, room_id: str, event_type: str
+    ) -> dict | None:
+        """Read a state event from a room. Returns None if not found."""
+        try:
+            resp = self._authed_request(
+                "GET",
+                f"/_matrix/client/v3/rooms/{self._encode_room(room_id)}"
+                f"/state/{quote(event_type, safe='')}",
+            )
+            return resp.json()
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code in (404, 403):
+                return None
+            raise

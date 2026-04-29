@@ -1,11 +1,10 @@
 """Reddit watcher — polls a subreddit for new posts and publishes alerts to Kafka."""
 
 import logging
-from typing import Optional
 
 import httpx
 
-from .schemas import WatchAlert, Source, Content
+from .schemas import Content, Source, WatchAlert
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +25,7 @@ class RedditWatcher:
         self.poll_interval_seconds = poll_interval_seconds
         self._seen_ids: set[str] = set()
 
-    def parse_post(self, post_data: dict) -> Optional[WatchAlert]:
+    def parse_post(self, post_data: dict) -> WatchAlert | None:
         """Parse a Reddit post JSON object into a WatchAlert. Returns None if already seen."""
         data = post_data["data"]
         post_id = data["name"]

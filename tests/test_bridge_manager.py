@@ -1,10 +1,10 @@
 """Tests for BridgeManager — verifies command sequencing without a live bridge."""
 
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from src.admin.bridge import BridgeManager, DEFAULT_BRIDGE_BOT
+from src.admin.bridge import DEFAULT_BRIDGE_BOT, BridgeManager
 
 BOT = DEFAULT_BRIDGE_BOT
 FUTURE_TS = 9999999999999

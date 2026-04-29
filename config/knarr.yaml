@@ -1,0 +1,14 @@
+server_name: knarr.local
+
+secrets:
+  discord_token: DISCORD_TOKEN
+  github_token: GITHUB_TOKEN
+
+users:
+  admin: "@admin:knarr.local"
+  knarr: "@knarr:knarr.local"
+  router: "@knarr-router:knarr.local"
+  bridge_bot: "@discordbot:knarr.local"
+
+communities:
+  - config/test.yaml

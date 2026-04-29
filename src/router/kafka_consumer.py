@@ -2,7 +2,6 @@
 
 import json
 import logging
-from typing import Optional
 
 from ..watchers.schemas import WatchAlert
 
@@ -32,7 +31,7 @@ def format_alert_message(alert: WatchAlert) -> str:
     return "\n".join(lines)
 
 
-def deserialize_alert(raw: bytes) -> Optional[WatchAlert]:
+def deserialize_alert(raw: bytes) -> WatchAlert | None:
     """Deserialize a Kafka message value into a WatchAlert."""
     try:
         data = json.loads(raw)

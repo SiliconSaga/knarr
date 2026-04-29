@@ -40,6 +40,7 @@ WhatsApp ←→ mautrix-whatsapp ←→ Synapse    (Phase 2)
 | Watchers | `knarr-watchers:dev` | Polls Reddit/GitHub, publishes to Kafka |
 | mautrix-discord | *(not yet deployed)* | Bridges Discord ↔ Matrix |
 | Kafka UI | `provectuslabs/kafka-ui:v0.7.2` | Web dashboard for browsing topics/messages |
+| Config Reconciler | Python (built-in) | Reads YAML config, diffs against Matrix state, applies changes |
 
 ## Prerequisites
 
@@ -220,9 +221,15 @@ kubectl rollout restart deploy/knarr-watchers deploy/knarr-router -n knarr
 python3 -m pytest tests/ -v
 ```
 
-21 tests covering event schemas, Reddit/GitHub watcher parsing and deduplication,
-router message formatting, Matrix admin client operations, and Discord bridge
-manager command sequencing.
+76 unit tests covering event schemas, Reddit/GitHub watcher parsing and
+deduplication, router message formatting, Matrix admin client operations,
+Discord bridge manager command sequencing, config schema validation
+(including malformed-shape rejection), and reconciler diff/apply logic.
+BDD integration scenarios for the config reconciler live under
+`tests/features/` (run against a real homeserver when
+`KNARR_ADMIN_PASSWORD` is set; otherwise skip).
+
+Lint with `python3 -m ruff check src/ tests/` (install via the `dev` extras).
 
 ## Kafka Topics
 

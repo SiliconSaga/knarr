@@ -2,7 +2,6 @@
 
 import os
 import time
-from typing import Optional
 
 from .client import MatrixAdminClient
 
@@ -17,7 +16,7 @@ class BridgeManager:
         self,
         client: MatrixAdminClient,
         management_room: str,
-        bridge_bot_user: Optional[str] = None,
+        bridge_bot_user: str | None = None,
     ):
         self.client = client
         self.management_room = management_room
@@ -81,7 +80,7 @@ class BridgeManager:
         self,
         channel_id: str,
         room_name: str,
-        invite: Optional[list[str]] = None,
+        invite: list[str] | None = None,
         topic: str = "",
         replace: bool = False,
     ) -> tuple[str, str]:
