@@ -79,6 +79,7 @@ class MatrixAdminClient:
         topic: str = "",
         alias: str = "",
         invite: list[str] | None = None,
+        *,
         private: bool = True,
         direct: bool = False,
     ) -> str:
@@ -290,6 +291,7 @@ class MatrixAdminClient:
         alias: str = "",
         topic: str = "",
         invite: list[str] | None = None,
+        *,
         private: bool = True,
     ) -> str:
         """Create a Matrix space (a room with m.space type). Returns room ID."""

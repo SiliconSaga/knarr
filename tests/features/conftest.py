@@ -28,6 +28,9 @@ def test_config_path():
 
 
 @pytest.fixture
-def test_config():
-    """Load the test config so steps can derive aliases dynamically."""
-    return load_config(str(_REPO_ROOT / "config" / "knarr.yaml"))
+def test_config(test_config_path: str):
+    """Load the test config so steps can derive aliases dynamically.
+
+    Depends on ``test_config_path`` so the path lives in exactly one place.
+    """
+    return load_config(test_config_path)

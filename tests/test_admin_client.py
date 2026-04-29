@@ -101,6 +101,30 @@ def test_invite_user():
     client.invite("!room:test", "@user:test")
 
 
+def test_join_room_posts_to_join_endpoint():
+    """Lock down join_room's HTTP shape — used by the bridge join flow."""
+    requests_seen = []
+
+    def capturing_handler(request: httpx.Request) -> httpx.Response:
+        if "/login" in request.url.path:
+            return httpx.Response(200, json={"access_token": "tok"})
+        if "/join" in request.url.path:
+            requests_seen.append((request.method, request.url.path))
+            return httpx.Response(200, json={"room_id": "!room:test"})
+        return httpx.Response(404, json={})
+
+    client = MatrixAdminClient("http://test:8008", "admin", "secret")
+    client._http = httpx.Client(transport=httpx.MockTransport(capturing_handler))
+
+    client.join_room("!room:test")
+    assert requests_seen, "join_room did not hit the homeserver"
+    method, path = requests_seen[-1]
+    assert method == "POST"
+    # Path is URL-encoded by the client; check the meaningful tokens are there.
+    assert "join" in path
+    assert "room" in path
+
+
 def test_send_message_returns_event_id():
     client = make_client({
         "/login": (200, {"access_token": "tok"}),

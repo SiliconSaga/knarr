@@ -69,6 +69,8 @@ class CommunityConfig:
 
     @classmethod
     def from_dict(cls, data: dict) -> CommunityConfig:
+        if "community" not in data:
+            raise ConfigError("'community' key is required in community config")
         spaces = {}
         for space_key, space_data in data.get("spaces", {}).items():
             spaces[space_key] = SpaceConfig.from_dict(space_key, space_data)

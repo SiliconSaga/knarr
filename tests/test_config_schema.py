@@ -45,7 +45,7 @@ VALID_COMMUNITY = {
 
 
 def test_parse_index_config():
-    config = KnarrConfig.from_dict(VALID_INDEX, community_loader=lambda p: VALID_COMMUNITY)
+    config = KnarrConfig.from_dict(VALID_INDEX, community_loader=lambda _: VALID_COMMUNITY)
     assert config.server_name == "knarr.local"
     assert len(config.communities) == 1
     assert config.users["admin"] == "@admin:knarr.local"
@@ -63,7 +63,7 @@ def test_validate_rejects_missing_server_name():
     bad = {**VALID_INDEX}
     del bad["server_name"]
     with pytest.raises(ConfigError, match="server_name"):
-        KnarrConfig.from_dict(bad, community_loader=lambda p: VALID_COMMUNITY)
+        KnarrConfig.from_dict(bad, community_loader=lambda _: VALID_COMMUNITY)
 
 
 def test_validate_rejects_unknown_user_reference():
@@ -80,7 +80,7 @@ def test_validate_rejects_unknown_user_reference():
     }
     config = KnarrConfig.from_dict(
         VALID_INDEX,
-        community_loader=lambda p: bad_community,
+        community_loader=lambda _: bad_community,
     )
     with pytest.raises(ConfigError, match="nonexistent_user"):
         validate_config(config)
@@ -103,14 +103,14 @@ def test_validate_rejects_duplicate_aliases():
     }
     config = KnarrConfig.from_dict(
         VALID_INDEX,
-        community_loader=lambda p: dup_community,
+        community_loader=lambda _: dup_community,
     )
     with pytest.raises(ConfigError, match="same-alias"):
         validate_config(config)
 
 
 def test_validate_accepts_valid_config():
-    config = KnarrConfig.from_dict(VALID_INDEX, community_loader=lambda p: VALID_COMMUNITY)
+    config = KnarrConfig.from_dict(VALID_INDEX, community_loader=lambda _: VALID_COMMUNITY)
     validate_config(config)
 
 
@@ -192,7 +192,7 @@ def test_validate_rejects_duplicate_room_keys_across_spaces():
             },
         },
     }
-    config = KnarrConfig.from_dict(VALID_INDEX, community_loader=lambda p: dup_keys)
+    config = KnarrConfig.from_dict(VALID_INDEX, community_loader=lambda _: dup_keys)
     with pytest.raises(ConfigError, match="Duplicate room key: general"):
         validate_config(config)
 
@@ -212,7 +212,7 @@ def test_validate_rejects_duplicate_space_keys():
             },
         },
     }
-    config = KnarrConfig.from_dict(VALID_INDEX, community_loader=lambda p: dup_space_keys)
+    config = KnarrConfig.from_dict(VALID_INDEX, community_loader=lambda _: dup_space_keys)
     with pytest.raises(ConfigError, match="Duplicate space key: inner"):
         validate_config(config)
 

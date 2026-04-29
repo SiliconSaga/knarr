@@ -1,11 +1,14 @@
 """Step definitions for config reconciliation BDD tests."""
 
+import logging
 import subprocess
 import sys
 
 from pytest_bdd import given, parsers, scenarios, then, when
 
 from src.admin.config_schema import load_config, validate_config
+
+logger = logging.getLogger(__name__)
 
 scenarios("../reconcile.feature")
 
@@ -71,8 +74,10 @@ def teardown_rooms(matrix_client, test_config):
                     f"/_synapse/admin/v2/rooms/{quote(room_id, safe='')}",
                     json={"purge": True, "message": "BDD teardown"},
                 )
-            except Exception:  # noqa: BLE001 — best-effort cleanup
-                pass
+            except Exception as e:  # noqa: BLE001 — best-effort cleanup
+                # Don't break teardown on a single failure, but leave a
+                # breadcrumb so future flakes can be traced.
+                logger.debug("Teardown DELETE failed for %s (%s): %s", alias, room_id, e)
 
 
 @when("I run config validate", target_fixture="cli_result")
