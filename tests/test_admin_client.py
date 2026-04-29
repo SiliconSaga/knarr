@@ -303,15 +303,26 @@ def test_add_space_child():
         if "/login" in request.url.path:
             return httpx.Response(200, json={"access_token": "tok"})
         if "/state/m.space.child" in request.url.path:
-            requests_seen.append(json.loads(request.content))
+            # raw_path preserves percent-encoding; .path is decoded.
+            requests_seen.append({
+                "raw_path": request.url.raw_path.decode("ascii"),
+                "body": json.loads(request.content),
+            })
             return httpx.Response(200, json={"event_id": "$evt"})
         return httpx.Response(404, json={})
 
     client = MatrixAdminClient("http://test:8008", "admin", "secret")
     client._http = httpx.Client(transport=httpx.MockTransport(capturing_handler))
 
-    client.add_space_child("!space:test", "!child:test")
-    assert requests_seen[0]["via"] == ["test"]
+    # Use a host:port child id so we can verify the via field preserves both.
+    client.add_space_child("!space:test", "!child:test:8008")
+
+    captured = requests_seen[0]
+    # via must keep host:port intact, not just hostname.
+    assert captured["body"]["via"] == ["test:8008"]
+    # The state-key (child_id) must be percent-encoded in the path so colons
+    # in room IDs don't terminate path segments.
+    assert "%21child%3Atest%3A8008" in captured["raw_path"]
 
 
 def test_set_room_state_event():

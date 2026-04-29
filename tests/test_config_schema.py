@@ -244,6 +244,86 @@ def test_load_config_rejects_empty_yaml(tmp_path: Path):
         load_config(str(bad))
 
 
+def test_from_dict_rejects_rooms_as_list():
+    """rooms must be a mapping — a YAML list is a common malformed shape."""
+    bad = {
+        **VALID_COMMUNITY,
+        "spaces": {
+            "s": {
+                "name": "S", "visibility": "private", "members": [],
+                "rooms": [],  # malformed — should be a dict
+            },
+        },
+    }
+    with pytest.raises(ConfigError, match="rooms"):
+        CommunityConfig.from_dict(bad)
+
+
+def test_from_dict_rejects_spaces_as_list():
+    """child spaces field must be a mapping."""
+    bad = {
+        **VALID_COMMUNITY,
+        "spaces": {
+            "s": {
+                "name": "S", "visibility": "private", "members": [],
+                "rooms": {},
+                "spaces": [],  # malformed
+            },
+        },
+    }
+    with pytest.raises(ConfigError, match="spaces"):
+        CommunityConfig.from_dict(bad)
+
+
+def test_from_dict_rejects_members_as_string():
+    """members must be a list of strings, not a single string."""
+    bad = {
+        **VALID_COMMUNITY,
+        "spaces": {
+            "s": {
+                "name": "S", "visibility": "private",
+                "members": "admin",  # malformed — should be a list
+                "rooms": {},
+            },
+        },
+    }
+    with pytest.raises(ConfigError, match="members"):
+        CommunityConfig.from_dict(bad)
+
+
+def test_from_dict_accepts_members_null():
+    """members: null is permitted and treated as empty (YAML default behavior)."""
+    cfg = {
+        **VALID_COMMUNITY,
+        "spaces": {
+            "s": {
+                "name": "S", "visibility": "private",
+                "members": None,
+                "rooms": {},
+            },
+        },
+    }
+    community = CommunityConfig.from_dict(cfg)
+    assert community.spaces["s"].members == []
+
+
+def test_from_dict_rejects_room_members_with_non_strings():
+    """A list with a non-string entry is rejected (e.g. members: [123])."""
+    bad = {
+        **VALID_COMMUNITY,
+        "spaces": {
+            "s": {
+                "name": "S", "visibility": "private", "members": [],
+                "rooms": {
+                    "r": {"alias": "r", "name": "R", "members": [123]},
+                },
+            },
+        },
+    }
+    with pytest.raises(ConfigError, match="members"):
+        CommunityConfig.from_dict(bad)
+
+
 def test_nested_spaces():
     nested = {
         **VALID_COMMUNITY,

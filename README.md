@@ -221,12 +221,13 @@ kubectl rollout restart deploy/knarr-watchers deploy/knarr-router -n knarr
 python3 -m pytest tests/ -v
 ```
 
-66 unit tests covering event schemas, Reddit/GitHub watcher parsing and
+71 unit tests covering event schemas, Reddit/GitHub watcher parsing and
 deduplication, router message formatting, Matrix admin client operations,
-Discord bridge manager command sequencing, config schema validation, and
-reconciler diff/apply logic. BDD integration scenarios for the config
-reconciler live under `tests/features/` (run against a real homeserver
-when `KNARR_ADMIN_PASSWORD` is set; otherwise skip).
+Discord bridge manager command sequencing, config schema validation
+(including malformed-shape rejection), and reconciler diff/apply logic.
+BDD integration scenarios for the config reconciler live under
+`tests/features/` (run against a real homeserver when
+`KNARR_ADMIN_PASSWORD` is set; otherwise skip).
 
 Lint with `python3 -m ruff check src/ tests/` (install via the `dev` extras).
 

@@ -13,6 +13,30 @@ class ConfigError(Exception):
     """Raised when config is invalid."""
 
 
+def _require_mapping(value: object, field_name: str) -> dict:
+    """Coerce ``value`` to a dict or raise ConfigError.
+
+    YAML's flexibility means ``rooms: []`` (a list) or ``rooms: null`` are
+    syntactically valid but trip ``AttributeError``/``TypeError`` later when we
+    try to ``.items()`` on them. Catch the type mismatch up front with a clear
+    message tied to the field name.
+    """
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ConfigError(f"{field_name} must be a mapping, got {type(value).__name__}")
+    return value
+
+
+def _require_str_list(value: object, field_name: str) -> list[str]:
+    """Coerce ``value`` to a list[str] or raise ConfigError."""
+    if value is None:
+        return []
+    if not isinstance(value, list) or any(not isinstance(v, str) for v in value):
+        raise ConfigError(f"{field_name} must be a list of strings")
+    return value
+
+
 @dataclass
 class RoomConfig:
     alias: str
@@ -28,9 +52,13 @@ class RoomConfig:
             alias=data.get("alias", key),
             name=data.get("name", key),
             topic=data.get("topic", ""),
-            members=data.get("members", []),
-            bridge=data.get("bridge"),
-            watchers=data.get("watchers"),
+            members=_require_str_list(data.get("members"), f"room.{key}.members"),
+            bridge=_require_mapping(data["bridge"], f"room.{key}.bridge")
+            if "bridge" in data and data["bridge"] is not None
+            else None,
+            watchers=_require_mapping(data["watchers"], f"room.{key}.watchers")
+            if "watchers" in data and data["watchers"] is not None
+            else None,
         )
 
 
@@ -45,17 +73,25 @@ class SpaceConfig:
     @classmethod
     def from_dict(cls, key: str, data: dict) -> SpaceConfig:
         rooms = {}
-        for room_key, room_data in data.get("rooms", {}).items():
-            rooms[room_key] = RoomConfig.from_dict(room_key, room_data)
+        for room_key, room_data in _require_mapping(
+            data.get("rooms"), f"space.{key}.rooms"
+        ).items():
+            rooms[room_key] = RoomConfig.from_dict(
+                room_key, _require_mapping(room_data, f"room.{room_key}")
+            )
 
         children = {}
-        for space_key, space_data in data.get("spaces", {}).items():
-            children[space_key] = SpaceConfig.from_dict(space_key, space_data)
+        for space_key, space_data in _require_mapping(
+            data.get("spaces"), f"space.{key}.spaces"
+        ).items():
+            children[space_key] = SpaceConfig.from_dict(
+                space_key, _require_mapping(space_data, f"space.{space_key}")
+            )
 
         return cls(
             name=data.get("name", key),
             visibility=data.get("visibility", "private"),
-            members=data.get("members", []),
+            members=_require_str_list(data.get("members"), f"space.{key}.members"),
             rooms=rooms,
             children=children,
         )
@@ -72,8 +108,12 @@ class CommunityConfig:
         if "community" not in data:
             raise ConfigError("'community' key is required in community config")
         spaces = {}
-        for space_key, space_data in data.get("spaces", {}).items():
-            spaces[space_key] = SpaceConfig.from_dict(space_key, space_data)
+        for space_key, space_data in _require_mapping(
+            data.get("spaces"), "community.spaces"
+        ).items():
+            spaces[space_key] = SpaceConfig.from_dict(
+                space_key, _require_mapping(space_data, f"space.{space_key}")
+            )
 
         return cls(
             community=data["community"],
@@ -105,8 +145,8 @@ class KnarrConfig:
 
         return cls(
             server_name=data["server_name"],
-            secrets=data.get("secrets", {}),
-            users=data.get("users", {}),
+            secrets=_require_mapping(data.get("secrets"), "secrets"),
+            users=_require_mapping(data.get("users"), "users"),
             communities=communities,
         )
 
