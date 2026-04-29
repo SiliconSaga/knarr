@@ -27,7 +27,7 @@ class Action:
     """
 
     resource: str
-    operation: str  # create, update, invite, bridge, config, skip, adopt
+    operation: str  # create, update, invite, bridge, noop, skip, adopt
     details: str
     target: str | None = None
     subject: str | None = None
@@ -40,7 +40,10 @@ class ReconcileReport:
 
     @property
     def has_drift(self) -> bool:
-        return any(a.operation != "skip" for a in self.actions)
+        # "skip" = we own this and it's correct.
+        # "noop" = informational only (e.g., watcher config we don't reconcile yet);
+        # neither should drive the audit drift exit code.
+        return any(a.operation not in ("skip", "noop") for a in self.actions)
 
     def summary(self) -> str:
         counts: dict[str, int] = {}
@@ -199,26 +202,36 @@ class Reconciler:
                         )
                     )
 
-        # Bridge config
+        # Bridge config — encode bridge_type into resource so each (room,
+        # bridge_type) pair is its own apply unit. Without this, two
+        # bridge entries on the same room collide on resource and
+        # _apply_bridge would loop over every bridge type per emitted
+        # action (N×N apply).
         if room.bridge:
             for bridge_type, bridge_config in room.bridge.items():
                 report.actions.append(
                     Action(
-                        f"bridge:{key}",
+                        f"bridge:{key}:{bridge_type}",
                         "bridge",
                         f"{bridge_type} channel {bridge_config.get('channel_id', '?')}",
                         target=resource,
+                        subject=bridge_type,
                     )
                 )
 
-        # Watcher config (collected, applied in _diff_watchers)
+        # Watcher config — informational only. Apply path isn't implemented
+        # yet (watchers run as a separate Deployment), so emit as "noop" so
+        # the action shows up in audit output without driving the drift exit
+        # code or being counted as "applied" by config apply. Resource
+        # includes the room key so two rooms watching the same source don't
+        # collide on identifier.
         if room.watchers:
             for watcher_type, watcher_config in room.watchers.items():
                 report.actions.append(
                     Action(
-                        f"watcher:{watcher_type}",
-                        "config",
-                        f"{watcher_type}: {watcher_config}",
+                        f"watcher:{watcher_type}:{key}",
+                        "noop",
+                        f"{watcher_type} in {key}: {watcher_config} (apply not yet implemented)",
                     )
                 )
 
@@ -230,7 +243,7 @@ class Reconciler:
         """Execute actions in dependency order."""
         for action in report.actions:
             try:
-                if action.operation == "skip":
+                if action.operation in ("skip", "noop"):
                     continue
                 if action.operation == "create" and action.resource.startswith("space:"):
                     self._apply_create_space(action)
@@ -242,8 +255,6 @@ class Reconciler:
                     self._apply_invite(action)
                 elif action.operation == "bridge":
                     self._apply_bridge(action)
-                elif action.operation == "config":
-                    pass  # Watcher config applied in batch (future)
             except httpx.HTTPStatusError as e:
                 body = e.response.text[:500] if e.response.text else ""
                 report.errors.append(
@@ -376,13 +387,26 @@ class Reconciler:
             self.client.invite(room_id, action.subject)
 
     def _apply_bridge(self, action: Action) -> None:
-        """Bridge a room to a Discord channel."""
+        """Bridge a room to a single bridge type (Discord today).
+
+        ``action.resource`` is ``bridge:<room_key>:<bridge_type>``; ``subject``
+        carries the bridge_type so we apply only that one bridge per action,
+        not every bridge configured on the room.
+        """
         if not self.bridge_manager:
             return
-        key = action.resource.split(":", 1)[1]
-        room = self._find_room(key)
-        if not room or not room.bridge:
+        # bridge:<room_key>:<bridge_type> — split into 3 segments. Older
+        # consumers wrote bridge:<room_key>; the early-return below handles
+        # that benignly.
+        parts = action.resource.split(":", 2)
+        if len(parts) != 3:
             return
+        _, key, bridge_type = parts
+
+        room = self._find_room(key)
+        if not room or not room.bridge or bridge_type not in room.bridge:
+            return
+        bridge_config = room.bridge[bridge_type]
 
         room_resource = f"room:{key}"
         room_id = self._room_ids.get(room_resource)
@@ -401,13 +425,12 @@ class Reconciler:
                 raise
             logger.debug("Bridge user already in room %s", room_id)
 
-        for bridge_type, bridge_config in room.bridge.items():
-            if bridge_type == "discord":
-                self.bridge_manager.bridge_channel(
-                    room_id,
-                    bridge_config["channel_id"],
-                    replace=True,
-                )
+        if bridge_type == "discord":
+            self.bridge_manager.bridge_channel(
+                room_id,
+                bridge_config["channel_id"],
+                replace=True,
+            )
 
     # --- Helper methods to find config entries ---
 

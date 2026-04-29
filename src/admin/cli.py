@@ -28,7 +28,7 @@ _ACTION_ICONS = {
     "skip": "=",
     "invite": ">",
     "bridge": "~",
-    "config": "*",
+    "noop": ".",
     "adopt": "!",
     "error": "X",
 }

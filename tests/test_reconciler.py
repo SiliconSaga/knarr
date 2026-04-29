@@ -309,6 +309,64 @@ def test_diff_detects_bridge_needed(mock_client):
 
     bridge_actions = [a for a in report.actions if a.operation == "bridge"]
     assert len(bridge_actions) == 1
+    # Resource must encode bridge_type so multiple bridge configs on the same
+    # room can't collide and cause _apply_bridge to apply each type N times.
+    assert bridge_actions[0].resource == "bridge:bridged:discord"
+    assert bridge_actions[0].subject == "discord"
+
+
+def test_diff_emits_one_bridge_action_per_bridge_type(mock_client):
+    """Two bridge types on a single room produce two distinct apply units."""
+    config = make_config(rooms={
+        "bridged": {
+            "alias": "bridged", "name": "Bridged",
+            "bridge": {
+                "discord": {"channel_id": "123"},
+                "telegram": {"channel_id": "456"},
+            },
+        },
+    })
+    reconciler = Reconciler(mock_client, config)
+    report = reconciler.diff()
+
+    bridge_resources = sorted(
+        a.resource for a in report.actions if a.operation == "bridge"
+    )
+    assert bridge_resources == ["bridge:bridged:discord", "bridge:bridged:telegram"]
+
+
+def test_apply_bridge_only_applies_specific_type(mock_client):
+    """Each bridge action should call bridge_channel exactly once for its type."""
+    mock_client.resolve_alias.return_value = "!room:test.local"
+    mock_client.get_room_state_event.return_value = _managed("bridged")
+    bridge_manager = MagicMock()
+    bridge_manager.client = MagicMock()
+
+    config = make_config(rooms={
+        "bridged": {
+            "alias": "bridged", "name": "Bridged",
+            "bridge": {
+                "discord": {"channel_id": "discord-chan"},
+                "telegram": {"channel_id": "telegram-chan"},
+            },
+        },
+    })
+    reconciler = Reconciler(mock_client, config, bridge_manager=bridge_manager)
+    reconciler.apply()
+
+    # Only discord is wired to bridge_channel today; telegram is silently
+    # ignored. Either way, bridge_channel must be called at most once and
+    # only with the discord channel id — not 4 times like the old N×N path.
+    discord_calls = [
+        c for c in bridge_manager.bridge_channel.call_args_list
+        if "discord-chan" in c.args
+    ]
+    telegram_calls = [
+        c for c in bridge_manager.bridge_channel.call_args_list
+        if "telegram-chan" in c.args
+    ]
+    assert len(discord_calls) == 1
+    assert telegram_calls == []
 
 
 def test_diff_detects_watcher_config(mock_client):
@@ -321,8 +379,13 @@ def test_diff_detects_watcher_config(mock_client):
     reconciler = Reconciler(mock_client, config)
     report = reconciler.diff()
 
-    watcher_actions = [a for a in report.actions if a.operation == "config"]
-    assert len(watcher_actions) >= 1
+    # Watcher config is informational — emitted as "noop" so the audit shows it
+    # without driving the drift exit code or being counted as "applied".
+    watcher_actions = [a for a in report.actions if a.operation == "noop"]
+    assert len(watcher_actions) == 1
+    # Resource includes the room key so two rooms watching the same source
+    # don't produce duplicate-resource actions.
+    assert watcher_actions[0].resource == "watcher:reddit:watched"
 
 
 def test_report_has_drift():
@@ -338,6 +401,16 @@ def test_report_no_drift():
     from src.admin.reconciler import ReconcileReport
     report = ReconcileReport(
         actions=[Action("room:x", "skip", "up to date")],
+        errors=[],
+    )
+    assert report.has_drift is False
+
+
+def test_report_no_drift_for_noop():
+    """noop actions (e.g., watcher config) must not drive drift exit code."""
+    from src.admin.reconciler import ReconcileReport
+    report = ReconcileReport(
+        actions=[Action("watcher:reddit:r", "noop", "informational only")],
         errors=[],
     )
     assert report.has_drift is False
