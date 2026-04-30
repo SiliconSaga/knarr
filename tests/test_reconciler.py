@@ -369,6 +369,71 @@ def test_apply_bridge_only_applies_specific_type(mock_client):
     assert telegram_calls == []
 
 
+def test_apply_bridge_grants_bridge_bot_power_level(mock_client):
+    """Apply should pre-grant PL 50 to the bridge bot so mautrix-discord
+    can set state events without M_FORBIDDEN warnings."""
+    mock_client.resolve_alias.return_value = "!room:test.local"
+
+    state_events = {
+        "org.knarr.managed": _managed("bridged"),
+        "m.room.power_levels": {"users": {"@admin:test.local": 100}},
+    }
+    mock_client.get_room_state_event.side_effect = lambda _rid, etype: state_events.get(etype)
+
+    bridge_manager = MagicMock()
+    bridge_manager.client = MagicMock()
+
+    config = make_config(rooms={
+        "bridged": {
+            "alias": "bridged", "name": "Bridged",
+            "bridge": {"discord": {"channel_id": "c1"}},
+        },
+    })
+    reconciler = Reconciler(mock_client, config, bridge_manager=bridge_manager)
+    reconciler.apply()
+
+    pl_writes = [
+        c for c in mock_client.set_room_state_event.call_args_list
+        if c.args[1] == "m.room.power_levels"
+    ]
+    assert pl_writes, "Expected a power_levels state-event write"
+    written = pl_writes[-1].args[2]
+    assert written["users"]["@discordbot:test.local"] == 50
+    # Existing entries must be preserved.
+    assert written["users"]["@admin:test.local"] == 100
+
+
+def test_apply_bridge_skips_pl_write_when_bot_already_powered(mock_client):
+    """Idempotent: if the bot already has PL >= 50, don't rewrite the event."""
+    mock_client.resolve_alias.return_value = "!room:test.local"
+
+    state_events = {
+        "org.knarr.managed": _managed("bridged"),
+        "m.room.power_levels": {
+            "users": {"@admin:test.local": 100, "@discordbot:test.local": 100},
+        },
+    }
+    mock_client.get_room_state_event.side_effect = lambda _rid, etype: state_events.get(etype)
+
+    bridge_manager = MagicMock()
+    bridge_manager.client = MagicMock()
+
+    config = make_config(rooms={
+        "bridged": {
+            "alias": "bridged", "name": "Bridged",
+            "bridge": {"discord": {"channel_id": "c1"}},
+        },
+    })
+    reconciler = Reconciler(mock_client, config, bridge_manager=bridge_manager)
+    reconciler.apply()
+
+    pl_writes = [
+        c for c in mock_client.set_room_state_event.call_args_list
+        if c.args[1] == "m.room.power_levels"
+    ]
+    assert pl_writes == [], "Should not rewrite power_levels when bot already powered"
+
+
 def test_diff_detects_watcher_config(mock_client):
     config = make_config(rooms={
         "watched": {
