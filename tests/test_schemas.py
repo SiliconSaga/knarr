@@ -1,4 +1,4 @@
-from src.watchers.schemas import WatchAlert, Source, Content
+from src.watchers.schemas import Content, Source, WatchAlert
 
 
 def test_watch_alert_serializes_to_dict():

@@ -1,5 +1,5 @@
 from src.router.kafka_consumer import format_alert_message
-from src.watchers.schemas import WatchAlert, Source, Content
+from src.watchers.schemas import Content, Source, WatchAlert
 
 
 def test_format_reddit_alert():
