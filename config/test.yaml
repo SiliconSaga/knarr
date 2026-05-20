@@ -50,3 +50,7 @@ spaces:
             alias: feed-reddit
             name: "#feed-reddit"
             topic: "Reddit watcher alerts"
+          feed-github:
+            alias: feed-github
+            name: "#feed-github"
+            topic: "GitHub watcher alerts (issues, PRs, discussions, releases)"

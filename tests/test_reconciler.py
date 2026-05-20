@@ -369,6 +369,245 @@ def test_apply_bridge_only_applies_specific_type(mock_client):
     assert telegram_calls == []
 
 
+def test_apply_bridge_grants_bridge_bot_power_level(mock_client):
+    """Apply should pre-grant PL 50 to the bridge bot so mautrix-discord
+    can set state events without M_FORBIDDEN warnings."""
+    mock_client.resolve_alias.return_value = "!room:test.local"
+
+    state_events = {
+        "org.knarr.managed": _managed("bridged"),
+        "m.room.power_levels": {"users": {"@admin:test.local": 100}},
+    }
+    mock_client.get_room_state_event.side_effect = lambda _rid, etype: state_events.get(etype)
+
+    bridge_manager = MagicMock()
+    bridge_manager.client = MagicMock()
+
+    config = make_config(rooms={
+        "bridged": {
+            "alias": "bridged", "name": "Bridged",
+            "bridge": {"discord": {"channel_id": "c1"}},
+        },
+    })
+    reconciler = Reconciler(mock_client, config, bridge_manager=bridge_manager)
+    reconciler.apply()
+
+    pl_writes = [
+        c for c in mock_client.set_room_state_event.call_args_list
+        if c.args[1] == "m.room.power_levels"
+    ]
+    assert pl_writes, "Expected a power_levels state-event write"
+    written = pl_writes[-1].args[2]
+    assert written["users"]["@discordbot:test.local"] == 50
+    # Existing entries must be preserved.
+    assert written["users"]["@admin:test.local"] == 100
+
+
+def test_apply_bridge_skips_pl_write_when_bot_already_powered(mock_client):
+    """Idempotent: if the bot already has PL >= 50, don't rewrite the event."""
+    mock_client.resolve_alias.return_value = "!room:test.local"
+
+    state_events = {
+        "org.knarr.managed": _managed("bridged"),
+        "m.room.power_levels": {
+            "users": {"@admin:test.local": 100, "@discordbot:test.local": 100},
+        },
+    }
+    mock_client.get_room_state_event.side_effect = lambda _rid, etype: state_events.get(etype)
+
+    bridge_manager = MagicMock()
+    bridge_manager.client = MagicMock()
+
+    config = make_config(rooms={
+        "bridged": {
+            "alias": "bridged", "name": "Bridged",
+            "bridge": {"discord": {"channel_id": "c1"}},
+        },
+    })
+    reconciler = Reconciler(mock_client, config, bridge_manager=bridge_manager)
+    reconciler.apply()
+
+    pl_writes = [
+        c for c in mock_client.set_room_state_event.call_args_list
+        if c.args[1] == "m.room.power_levels"
+    ]
+    assert pl_writes == [], "Should not rewrite power_levels when bot already powered"
+
+
+def test_apply_bridge_skips_pl_grant_for_non_discord_bridges(mock_client):
+    """The discord-bot PL grant is gated to bridge_type == 'discord' — other
+    bridge types (telegram, matrix-matrix, etc.) have their own bot users
+    and must not accidentally grant power to @discordbot."""
+    mock_client.resolve_alias.return_value = "!room:test.local"
+
+    state_events = {
+        "org.knarr.managed": _managed("bridged"),
+        "m.room.power_levels": {"users": {"@admin:test.local": 100}},
+    }
+    mock_client.get_room_state_event.side_effect = lambda _rid, etype: state_events.get(etype)
+
+    bridge_manager = MagicMock()
+    bridge_manager.client = MagicMock()
+
+    config = make_config(rooms={
+        "bridged": {
+            "alias": "bridged", "name": "Bridged",
+            # telegram-only — no discord
+            "bridge": {"telegram": {"channel_id": "c1"}},
+        },
+    })
+    reconciler = Reconciler(mock_client, config, bridge_manager=bridge_manager)
+    reconciler.apply()
+
+    pl_writes = [
+        c for c in mock_client.set_room_state_event.call_args_list
+        if c.args[1] == "m.room.power_levels"
+    ]
+    assert pl_writes == [], (
+        "telegram-only bridge should not trigger a power_levels write "
+        f"for @discordbot; got: {pl_writes}"
+    )
+    # The bridge-operator join is also discord-specific (the operator is
+    # `@knarr`, who sends `!discord bridge` commands). A telegram-only
+    # bridge action shouldn't pull that user into the room either.
+    assert bridge_manager.client.join_room.call_count == 0, (
+        "telegram-only bridge should not call bridge_manager.client.join_room"
+    )
+
+
+def test_apply_bridge_uses_room_state_default_when_higher_than_floor(mock_client):
+    """If the room's state_default is above 50, the bot needs at least that
+    much power — the old hardcoded 50 would leave mautrix still M_FORBIDDEN."""
+    mock_client.resolve_alias.return_value = "!room:test.local"
+
+    state_events = {
+        "org.knarr.managed": _managed("bridged"),
+        "m.room.power_levels": {
+            "users": {"@admin:test.local": 100},
+            "state_default": 75,
+        },
+    }
+    mock_client.get_room_state_event.side_effect = lambda _rid, etype: state_events.get(etype)
+
+    bridge_manager = MagicMock()
+    bridge_manager.client = MagicMock()
+    bridge_manager.client.admin_user = "knarr"
+
+    config = make_config(rooms={
+        "bridged": {
+            "alias": "bridged", "name": "Bridged",
+            "bridge": {"discord": {"channel_id": "c1"}},
+        },
+    })
+    reconciler = Reconciler(mock_client, config, bridge_manager=bridge_manager)
+    reconciler.apply()
+
+    pl_writes = [
+        c for c in mock_client.set_room_state_event.call_args_list
+        if c.args[1] == "m.room.power_levels"
+    ]
+    assert pl_writes, "Expected a power_levels write when bot below state_default"
+    assert pl_writes[-1].args[2]["users"]["@discordbot:test.local"] == 75
+
+
+def test_apply_bridge_uses_per_event_override_when_present(mock_client):
+    """A room-specific override on the bridge event type beats both the
+    50 floor and state_default."""
+    mock_client.resolve_alias.return_value = "!room:test.local"
+
+    state_events = {
+        "org.knarr.managed": _managed("bridged"),
+        "m.room.power_levels": {
+            "users": {"@admin:test.local": 100},
+            "state_default": 50,
+            "events": {"m.bridge": 90},
+        },
+    }
+    mock_client.get_room_state_event.side_effect = lambda _rid, etype: state_events.get(etype)
+
+    bridge_manager = MagicMock()
+    bridge_manager.client = MagicMock()
+    bridge_manager.client.admin_user = "knarr"
+
+    config = make_config(rooms={
+        "bridged": {
+            "alias": "bridged", "name": "Bridged",
+            "bridge": {"discord": {"channel_id": "c1"}},
+        },
+    })
+    reconciler = Reconciler(mock_client, config, bridge_manager=bridge_manager)
+    reconciler.apply()
+
+    pl_writes = [
+        c for c in mock_client.set_room_state_event.call_args_list
+        if c.args[1] == "m.room.power_levels"
+    ]
+    assert pl_writes, "Expected a power_levels write when bot below event override"
+    assert pl_writes[-1].args[2]["users"]["@discordbot:test.local"] == 90
+
+
+def test_apply_bridge_skips_join_when_bridge_user_already_member(mock_client):
+    """Pre-check membership before calling join_room. If the bridge user is
+    already a joined member, skip the join — otherwise any 403 returned by
+    Matrix is treated as a real failure (ACL, ban, no invite, etc.)."""
+    mock_client.resolve_alias.return_value = "!room:test.local"
+    # Bridge user is already joined.
+    mock_client.get_room_members.return_value = ["@knarr:test.local", "@admin:test.local"]
+
+    state_events = {
+        "org.knarr.managed": _managed("bridged"),
+        "m.room.power_levels": {"users": {"@admin:test.local": 100}},
+    }
+    mock_client.get_room_state_event.side_effect = lambda _rid, etype: state_events.get(etype)
+
+    bridge_manager = MagicMock()
+    bridge_manager.client = MagicMock()
+    bridge_manager.client.admin_user = "knarr"
+
+    config = make_config(rooms={
+        "bridged": {
+            "alias": "bridged", "name": "Bridged",
+            "bridge": {"discord": {"channel_id": "c1"}},
+        },
+    })
+    reconciler = Reconciler(mock_client, config, bridge_manager=bridge_manager)
+    reconciler.apply()
+
+    assert bridge_manager.client.join_room.call_count == 0, (
+        "Should not call join_room when bridge user is already a member"
+    )
+    # The bridge still proceeds — bridge_channel must still be called.
+    assert bridge_manager.bridge_channel.call_count == 1
+
+
+def test_apply_create_room_omits_discord_bot_when_bridge_is_telegram_only(mock_client):
+    """`bridge_bot` (= @discordbot) is auto-invited in _apply_create_room only
+    when the room declares a Discord bridge — a telegram-only room must not
+    pre-invite the discord bot."""
+    mock_client.resolve_alias.return_value = None  # room missing → create path
+
+    config = make_config(rooms={
+        "tg-only": {
+            "alias": "tg-only", "name": "Telegram only",
+            "members": ["router"],
+            "bridge": {"telegram": {"channel_id": "tg"}},
+        },
+    })
+    reconciler = Reconciler(mock_client, config)
+    reconciler.apply()
+
+    create_calls = [
+        c for c in mock_client.create_room.call_args_list
+        if c.kwargs.get("alias") == "tg-only"
+    ]
+    assert create_calls, "create_room was not called for tg-only"
+    invites = create_calls[0].kwargs.get("invite") or []
+    assert "@discordbot:test.local" not in invites, (
+        f"@discordbot should not be auto-invited to a telegram-only room; "
+        f"got invite list: {invites}"
+    )
+
+
 def test_diff_detects_watcher_config(mock_client):
     config = make_config(rooms={
         "watched": {
