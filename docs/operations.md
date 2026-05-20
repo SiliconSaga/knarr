@@ -46,8 +46,12 @@ For scripting or quick terminal checks, `kcat` talks directly to Kafka via port-
 ```bash
 brew install kcat
 
+# Discover the Kafka cluster name — Crossplane gives it a random suffix
+# (e.g. knarr-kafka-8r9tn). See troubleshooting.md for context.
+KAFKA_CLUSTER=$(kubectl get kafka -n kafka -o jsonpath='{.items[0].metadata.name}')
+
 # Port-forward Kafka (background, keep open while using kcat)
-kubectl port-forward -n kafka svc/knarr-kafka-8r9tn-kafka-bootstrap 9092:9092 &
+kubectl port-forward -n kafka svc/${KAFKA_CLUSTER}-kafka-bootstrap 9092:9092 &
 
 # List topics
 kcat -b localhost:9092 -L
@@ -72,8 +76,10 @@ kill %1
 # List all Knarr topics
 kubectl get kafkatopics -n kafka | grep knarr
 
-# Check router consumer group lag
-kubectl exec -n kafka knarr-kafka-8r9tn-knarr-kafka-8r9tn-combined-0 -- \
+# Check router consumer group lag (look up the pod name first — same
+# Crossplane suffix pattern as the service above)
+KAFKA_POD=$(kubectl get pods -n kafka -l strimzi.io/kind=Kafka -o jsonpath='{.items[0].metadata.name}')
+kubectl exec -n kafka "$KAFKA_POD" -- \
   bin/kafka-consumer-groups.sh --bootstrap-server localhost:9092 \
   --describe --group knarr-router
 ```
@@ -81,9 +87,11 @@ kubectl exec -n kafka knarr-kafka-8r9tn-knarr-kafka-8r9tn-combined-0 -- \
 ## Matrix client access
 
 **Element Desktop (Mac):**
+
 ```bash
 brew install --cask element
 ```
+
 Sign in → custom homeserver `http://matrix.knarr.local` → `admin` / your password.
 
 **Element Mobile (phone):**

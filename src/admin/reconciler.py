@@ -425,15 +425,17 @@ class Reconciler:
                 raise
             logger.debug("Bridge user already in room %s", room_id)
 
-        # Pre-grant PL 50 to the bridge bot so it can set state events
-        # (m.bridge etc.) once mautrix-discord pulls it into the room.
-        # Without this, bridging still works at the message-relay layer
-        # but mautrix logs M_FORBIDDEN warnings every time it tries to
-        # write bridge state — cosmetic but noisy. Idempotent: skips the
-        # write if the bot already has sufficient power.
-        self._ensure_bridge_bot_power(room_id)
-
         if bridge_type == "discord":
+            # Pre-grant PL 50 to the discord bot so it can set state events
+            # (m.bridge etc.) once mautrix-discord pulls it into the room.
+            # Without this, bridging still works at the message-relay layer
+            # but mautrix logs M_FORBIDDEN warnings every time it tries to
+            # write bridge state — cosmetic but noisy. Idempotent: skips
+            # the write if the bot already has sufficient power. Gated to
+            # discord because `bridge_bot` in the user map is discord-specific;
+            # other bridge types (telegram, etc.) have their own bot user
+            # and need their own grant logic when they're implemented.
+            self._ensure_bridge_bot_power(room_id)
             self.bridge_manager.bridge_channel(
                 room_id,
                 bridge_config["channel_id"],

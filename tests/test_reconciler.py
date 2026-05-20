@@ -434,6 +434,41 @@ def test_apply_bridge_skips_pl_write_when_bot_already_powered(mock_client):
     assert pl_writes == [], "Should not rewrite power_levels when bot already powered"
 
 
+def test_apply_bridge_skips_pl_grant_for_non_discord_bridges(mock_client):
+    """The discord-bot PL grant is gated to bridge_type == 'discord' — other
+    bridge types (telegram, matrix-matrix, etc.) have their own bot users
+    and must not accidentally grant power to @discordbot."""
+    mock_client.resolve_alias.return_value = "!room:test.local"
+
+    state_events = {
+        "org.knarr.managed": _managed("bridged"),
+        "m.room.power_levels": {"users": {"@admin:test.local": 100}},
+    }
+    mock_client.get_room_state_event.side_effect = lambda _rid, etype: state_events.get(etype)
+
+    bridge_manager = MagicMock()
+    bridge_manager.client = MagicMock()
+
+    config = make_config(rooms={
+        "bridged": {
+            "alias": "bridged", "name": "Bridged",
+            # telegram-only — no discord
+            "bridge": {"telegram": {"channel_id": "c1"}},
+        },
+    })
+    reconciler = Reconciler(mock_client, config, bridge_manager=bridge_manager)
+    reconciler.apply()
+
+    pl_writes = [
+        c for c in mock_client.set_room_state_event.call_args_list
+        if c.args[1] == "m.room.power_levels"
+    ]
+    assert pl_writes == [], (
+        "telegram-only bridge should not trigger a power_levels write "
+        f"for @discordbot; got: {pl_writes}"
+    )
+
+
 def test_diff_detects_watcher_config(mock_client):
     config = make_config(rooms={
         "watched": {
