@@ -418,27 +418,32 @@ class Reconciler:
             return
 
         if bridge_type == "discord":
-            # The bridge operator user (used by BridgeManager) needs to be a
-            # member of the room to send the !discord bridge command. Surface
-            # real errors but ignore "already in the room" (403). Discord-only
-            # because the operator is `@knarr` (discord-specific); other
-            # bridges need their own operator-membership logic if/when added.
-            try:
+            # Make sure the bridge operator (`@knarr`, the user who sends
+            # `!discord bridge` commands) is in the room. Check current
+            # membership first rather than blindly attempting `join_room`
+            # and swallowing 403s — Matrix returns 403 for several reasons
+            # (ACL, ban, not invited, insufficient PL) and we only want
+            # to skip the "already a member" case. Real failures bubble
+            # up through _apply_actions' httpx.HTTPStatusError handler
+            # with full status + URL + body context.
+            bridge_user_mxid = (
+                f"@{self.bridge_manager.client.admin_user}"
+                f":{self.config.server_name}"
+            )
+            joined = self.client.get_room_members(room_id)
+            if bridge_user_mxid not in joined:
                 self.bridge_manager.client.join_room(room_id)
-            except httpx.HTTPStatusError as e:
-                if e.response.status_code != 403:
-                    raise
-                logger.debug("Bridge user already in room %s", room_id)
 
-            # Pre-grant PL 50 to the discord bot so it can set state events
-            # (m.bridge etc.) once mautrix-discord pulls it into the room.
-            # Without this, bridging still works at the message-relay layer
-            # but mautrix logs M_FORBIDDEN warnings every time it tries to
-            # write bridge state — cosmetic but noisy. Idempotent: skips
-            # the write if the bot already has sufficient power. Gated to
-            # discord because `bridge_bot` in the user map is discord-specific;
-            # other bridge types (telegram, etc.) have their own bot user
-            # and need their own grant logic when they're implemented.
+            # Pre-grant the discord bot enough power to write bridge state
+            # events (m.bridge etc.) once mautrix-discord pulls it into the
+            # room. Without this, bridging still works at the message-relay
+            # layer but mautrix logs M_FORBIDDEN warnings every time it
+            # tries to write bridge state — cosmetic but noisy. Idempotent:
+            # skips the write if the bot already has sufficient power.
+            # Gated to discord because `bridge_bot` in the user map is
+            # discord-specific; other bridge types (telegram, etc.) have
+            # their own bot user and need their own grant logic when
+            # they're implemented.
             self._ensure_bridge_bot_power(room_id)
             self.bridge_manager.bridge_channel(
                 room_id,
@@ -446,13 +451,24 @@ class Reconciler:
                 replace=True,
             )
 
-    def _ensure_bridge_bot_power(self, room_id: str, level: int = 50) -> None:
-        """Pre-grant the bridge bot at least ``level`` power in ``room_id``.
+    def _ensure_bridge_bot_power(
+        self,
+        room_id: str,
+        floor: int = 50,
+        event_type: str = "m.bridge",
+    ) -> None:
+        """Pre-grant the bridge bot enough power to write ``event_type``.
 
-        Reads the current ``m.room.power_levels`` event, merges in the
-        bot's user_id if absent or below ``level``, writes back. Skips
-        the write entirely if the bot is already at or above ``level``.
-        Quiet no-op when no ``bridge_bot`` is declared in the user map.
+        Reads the room's ``m.room.power_levels`` and computes the actual
+        threshold needed: the highest of (caller's ``floor``, the room's
+        ``state_default``, or any per-event override for ``event_type``).
+        Bumps ``users[<bot_id>]`` if it sits below that threshold; quiet
+        no-op when it doesn't, or when no ``bridge_bot`` is declared in
+        the user map.
+
+        Hardcoded ``50`` is wrong if a room raises ``state_default`` or
+        sets ``events.m.bridge`` higher — the bot would be granted
+        insufficient power and mautrix would still M_FORBIDDEN.
         """
         bot_id = self.config.users.get("bridge_bot")
         if not bot_id:
@@ -460,10 +476,18 @@ class Reconciler:
         current = self.client.get_room_state_event(
             room_id, "m.room.power_levels"
         ) or {}
+        # 50 is the Matrix-spec default for state_default; per-event override
+        # wins over state_default when present; caller's floor is the minimum.
+        state_default = current.get("state_default", 50)
+        event_override = current.get("events", {}).get(event_type)
+        target = max(
+            floor,
+            event_override if event_override is not None else state_default,
+        )
         users = current.setdefault("users", {})
-        if users.get(bot_id, 0) >= level:
+        if users.get(bot_id, 0) >= target:
             return
-        users[bot_id] = level
+        users[bot_id] = target
         self.client.set_room_state_event(
             room_id, "m.room.power_levels", current
         )

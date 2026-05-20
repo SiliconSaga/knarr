@@ -475,6 +475,111 @@ def test_apply_bridge_skips_pl_grant_for_non_discord_bridges(mock_client):
     )
 
 
+def test_apply_bridge_uses_room_state_default_when_higher_than_floor(mock_client):
+    """If the room's state_default is above 50, the bot needs at least that
+    much power — the old hardcoded 50 would leave mautrix still M_FORBIDDEN."""
+    mock_client.resolve_alias.return_value = "!room:test.local"
+
+    state_events = {
+        "org.knarr.managed": _managed("bridged"),
+        "m.room.power_levels": {
+            "users": {"@admin:test.local": 100},
+            "state_default": 75,
+        },
+    }
+    mock_client.get_room_state_event.side_effect = lambda _rid, etype: state_events.get(etype)
+
+    bridge_manager = MagicMock()
+    bridge_manager.client = MagicMock()
+    bridge_manager.client.admin_user = "knarr"
+
+    config = make_config(rooms={
+        "bridged": {
+            "alias": "bridged", "name": "Bridged",
+            "bridge": {"discord": {"channel_id": "c1"}},
+        },
+    })
+    reconciler = Reconciler(mock_client, config, bridge_manager=bridge_manager)
+    reconciler.apply()
+
+    pl_writes = [
+        c for c in mock_client.set_room_state_event.call_args_list
+        if c.args[1] == "m.room.power_levels"
+    ]
+    assert pl_writes, "Expected a power_levels write when bot below state_default"
+    assert pl_writes[-1].args[2]["users"]["@discordbot:test.local"] == 75
+
+
+def test_apply_bridge_uses_per_event_override_when_present(mock_client):
+    """A room-specific override on the bridge event type beats both the
+    50 floor and state_default."""
+    mock_client.resolve_alias.return_value = "!room:test.local"
+
+    state_events = {
+        "org.knarr.managed": _managed("bridged"),
+        "m.room.power_levels": {
+            "users": {"@admin:test.local": 100},
+            "state_default": 50,
+            "events": {"m.bridge": 90},
+        },
+    }
+    mock_client.get_room_state_event.side_effect = lambda _rid, etype: state_events.get(etype)
+
+    bridge_manager = MagicMock()
+    bridge_manager.client = MagicMock()
+    bridge_manager.client.admin_user = "knarr"
+
+    config = make_config(rooms={
+        "bridged": {
+            "alias": "bridged", "name": "Bridged",
+            "bridge": {"discord": {"channel_id": "c1"}},
+        },
+    })
+    reconciler = Reconciler(mock_client, config, bridge_manager=bridge_manager)
+    reconciler.apply()
+
+    pl_writes = [
+        c for c in mock_client.set_room_state_event.call_args_list
+        if c.args[1] == "m.room.power_levels"
+    ]
+    assert pl_writes, "Expected a power_levels write when bot below event override"
+    assert pl_writes[-1].args[2]["users"]["@discordbot:test.local"] == 90
+
+
+def test_apply_bridge_skips_join_when_bridge_user_already_member(mock_client):
+    """Pre-check membership before calling join_room. If the bridge user is
+    already a joined member, skip the join — otherwise any 403 returned by
+    Matrix is treated as a real failure (ACL, ban, no invite, etc.)."""
+    mock_client.resolve_alias.return_value = "!room:test.local"
+    # Bridge user is already joined.
+    mock_client.get_room_members.return_value = ["@knarr:test.local", "@admin:test.local"]
+
+    state_events = {
+        "org.knarr.managed": _managed("bridged"),
+        "m.room.power_levels": {"users": {"@admin:test.local": 100}},
+    }
+    mock_client.get_room_state_event.side_effect = lambda _rid, etype: state_events.get(etype)
+
+    bridge_manager = MagicMock()
+    bridge_manager.client = MagicMock()
+    bridge_manager.client.admin_user = "knarr"
+
+    config = make_config(rooms={
+        "bridged": {
+            "alias": "bridged", "name": "Bridged",
+            "bridge": {"discord": {"channel_id": "c1"}},
+        },
+    })
+    reconciler = Reconciler(mock_client, config, bridge_manager=bridge_manager)
+    reconciler.apply()
+
+    assert bridge_manager.client.join_room.call_count == 0, (
+        "Should not call join_room when bridge user is already a member"
+    )
+    # The bridge still proceeds — bridge_channel must still be called.
+    assert bridge_manager.bridge_channel.call_count == 1
+
+
 def test_apply_create_room_omits_discord_bot_when_bridge_is_telegram_only(mock_client):
     """`bridge_bot` (= @discordbot) is auto-invited in _apply_create_room only
     when the room declares a Discord bridge — a telegram-only room must not
