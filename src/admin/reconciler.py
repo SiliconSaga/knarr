@@ -318,8 +318,10 @@ class Reconciler:
             for m in room.members
             if self._resolve_user(m) != creator_mxid
         ]
-        # Auto-invite bridge bot if bridge config present
-        if room.bridge and "bridge_bot" in self.config.users:
+        # Auto-invite the Discord bridge bot only for Discord bridges.
+        # `bridge_bot` in the user map is discord-specific (@discordbot:…); a
+        # telegram-only or other-bridge room shouldn't get it invited.
+        if room.bridge and "discord" in room.bridge and "bridge_bot" in self.config.users:
             bot = self.config.users["bridge_bot"]
             if bot not in members and bot != creator_mxid:
                 members.append(bot)
@@ -415,17 +417,19 @@ class Reconciler:
         if not room_id:
             return
 
-        # The bridge operator user (used by BridgeManager) needs to be a
-        # member of the room to send the !discord bridge command. Surface real
-        # errors but ignore "already in the room" (403).
-        try:
-            self.bridge_manager.client.join_room(room_id)
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code != 403:
-                raise
-            logger.debug("Bridge user already in room %s", room_id)
-
         if bridge_type == "discord":
+            # The bridge operator user (used by BridgeManager) needs to be a
+            # member of the room to send the !discord bridge command. Surface
+            # real errors but ignore "already in the room" (403). Discord-only
+            # because the operator is `@knarr` (discord-specific); other
+            # bridges need their own operator-membership logic if/when added.
+            try:
+                self.bridge_manager.client.join_room(room_id)
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code != 403:
+                    raise
+                logger.debug("Bridge user already in room %s", room_id)
+
             # Pre-grant PL 50 to the discord bot so it can set state events
             # (m.bridge etc.) once mautrix-discord pulls it into the room.
             # Without this, bridging still works at the message-relay layer

@@ -467,6 +467,40 @@ def test_apply_bridge_skips_pl_grant_for_non_discord_bridges(mock_client):
         "telegram-only bridge should not trigger a power_levels write "
         f"for @discordbot; got: {pl_writes}"
     )
+    # The bridge-operator join is also discord-specific (the operator is
+    # `@knarr`, who sends `!discord bridge` commands). A telegram-only
+    # bridge action shouldn't pull that user into the room either.
+    assert bridge_manager.client.join_room.call_count == 0, (
+        "telegram-only bridge should not call bridge_manager.client.join_room"
+    )
+
+
+def test_apply_create_room_omits_discord_bot_when_bridge_is_telegram_only(mock_client):
+    """`bridge_bot` (= @discordbot) is auto-invited in _apply_create_room only
+    when the room declares a Discord bridge — a telegram-only room must not
+    pre-invite the discord bot."""
+    mock_client.resolve_alias.return_value = None  # room missing → create path
+
+    config = make_config(rooms={
+        "tg-only": {
+            "alias": "tg-only", "name": "Telegram only",
+            "members": ["router"],
+            "bridge": {"telegram": {"channel_id": "tg"}},
+        },
+    })
+    reconciler = Reconciler(mock_client, config)
+    reconciler.apply()
+
+    create_calls = [
+        c for c in mock_client.create_room.call_args_list
+        if c.kwargs.get("alias") == "tg-only"
+    ]
+    assert create_calls, "create_room was not called for tg-only"
+    invites = create_calls[0].kwargs.get("invite") or []
+    assert "@discordbot:test.local" not in invites, (
+        f"@discordbot should not be auto-invited to a telegram-only room; "
+        f"got invite list: {invites}"
+    )
 
 
 def test_diff_detects_watcher_config(mock_client):
