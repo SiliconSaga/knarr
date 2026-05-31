@@ -97,6 +97,62 @@ Matrix room; the first available volunteer responds.
 
 ---
 
+## Audience: three user groups
+
+Knarr serves three distinct user groups with different needs, different
+trust postures, and different deployment shapes. The architecture
+should make all three first-class.
+
+### Group A — Community admins and moderators
+
+The original target. Run watcher instances on behalf of communities
+they manage (Terasology maintainers, PTA leaders, sports league
+admins). Hold credentials for community-scoped sources (a Page admin
+token, a community-shared PAT, a Discord bot token). Consume in
+shared Matrix rooms; first-available volunteer acts. Tolerant of (and
+benefits from) the AI summarize layer because volume is highest here.
+
+### Group B — Personal curators
+
+Power users, often *also* in Group A, watching their own feeds in a
+curated way (their own GitHub notifications, their YouTube channel,
+their personal social presence). Hold credentials for personal-scoped
+sources. Consume in personal Matrix spaces. Same trust posture as
+Group A but for `user/<id>`-scoped instances. Many real-world users
+are simultaneously Group A and Group B and don't experience them as
+distinct.
+
+### Group C — Community-receiving users (mundane)
+
+People who just want to **stay in touch with a community** from
+whichever platform they already use. They don't run Knarr; they don't
+manage credentials beyond their own platform-of-choice account. They
+receive content from one or more community spaces, delivered through
+the channel they prefer (Matrix client, SMS, WhatsApp, email digest
+— per the OG 2026-04-02 design's outbound fan-out side, which this
+doc complements). Some communicate back through the same channel; some
+just consume. Group A's job is to keep the community healthy *for*
+Group C — so anything Group A does to triage and curate ultimately
+serves Group C.
+
+This doc focuses on Groups A and B (the inbound source side). Group C
+is served by the OG design's outbound fan-out; the two designs share
+the Keycloak identity backbone but otherwise ship orthogonally. A
+single Knarr deployment serves all three groups simultaneously — the
+distinctions are about which features each group exercises, not about
+separate instances.
+
+**Implication for design calls that follow:** the per-room
+`presentation_mode` (summarized vs raw_threaded) opt-out matters most
+to Group A consumers (a moderator might want raw passthrough into a
+private review channel before the AI touches anything) and to Group
+C (a community room consumed mostly by Group C users might prefer
+unfiltered posts to honour their trust preferences). Group B
+typically opts into summarization because the value-to-volume ratio
+is highest in personal feeds.
+
+---
+
 ## Source taxonomy
 
 Two orthogonal axes. Every source Knarr can ingest lives at one cell of
@@ -132,7 +188,7 @@ tier's break-even.
 
 ### Concrete example instances
 
-```
+```text
 (reddit,    api,            community/terasology,    auth=anonymous)
 (github,    api,            community/terasology,    auth=community-pat)
 (github,    api,            user/cervator,           auth=cervator-pat)
@@ -172,22 +228,30 @@ Scope identifiers reference Keycloak:
 
 K8s secrets, with a structured naming convention:
 
-```
+```text
 knarr-cred-<scope-type>-<scope-id>-<purpose>
 ```
 
 Examples:
 
-```
+```text
 knarr-cred-user-cervator-fb-session       (browser session blob)
 knarr-cred-community-terasology-gh-pat    (classic PAT)
 knarr-cred-group-pta-school-name-fb-token (admin-installed app token)
 ```
 
-Instance config carries `credentials_ref: <secret-name>` and
-`credentials_key: <key-within-secret>`. The reconciler never reads or
-rotates secret contents — just references them. Credential management
-is a separate CLI flow so the reconciler stays single-purpose.
+Instance config carries `credentials_ref` as a nested object grouping
+the secret reference fields:
+
+```yaml
+credentials_ref:
+  secret_name: knarr-cred-community-terasology-gh-pat
+  secret_key: GITHUB_TOKEN
+```
+
+The reconciler never reads or rotates secret contents — just
+references them. Credential management is a separate CLI flow so the
+reconciler stays single-purpose.
 
 ### Credential lifecycle
 
@@ -208,28 +272,40 @@ Three operations, all CLI-driven:
 Use the **narrow scope** path:
 
 - Bot applies a `knarr/processed` label to messages it has fully
-  extracted.
+  extracted via the Gmail `users.messages.modify` API.
 - User's own Gmail filter (one-time copy-paste setup in the Gmail web
   UI) auto-archives or trashes anything with that label.
-- Bot's scope is just `gmail.labels` plus permission to apply its own
-  label. No "delete arbitrary mail" capability.
+- Bot's OAuth scope is `https://www.googleapis.com/auth/gmail.modify`
+  — the least-privilege scope that supports `users.messages.modify`
+  per Google's docs. Note: this scope can in principle change other
+  messages too; the constraint is enforced by *our code* applying only
+  the `knarr/processed` label. We deliberately avoid
+  `https://mail.google.com/` (full-mailbox, includes message deletion)
+  and we don't need `gmail.readonly` because the email-extract adapter
+  also reads message bodies via the Gmail API.
 
-This is doing double duty: it minimises the agent's trust footprint
-**and** the label itself becomes a useful human-review surface. The
-user can dip into the `knarr/processed` label any time, glance through
-what's there, and confirm it looks right before letting the filter
-clean it up. The label is the bot's permission boundary *and* an
-audit trail.
+This is doing double duty: the OAuth scope is the platform-level
+ceiling, and the label itself becomes a useful human-review surface.
+The user can dip into the `knarr/processed` label any time, glance
+through what's there, and confirm it looks right before letting the
+filter clean it up. The label is the convenient operational boundary
+*and* an audit trail.
 
 ### Per-user space provisioning
 
 When a Knarr user is provisioned, the reconciler creates
-`#<user>-personal:knarr.local` — a Matrix space the user solely
-inhabits, marked managed, with a Keycloak-user reference attribute.
-Any future `user/<their-id>` instances route content into this space
-(with optional sub-room organisation the user adjusts later). "Where
-does my personal Knarr stuff land" becomes a one-time setup, not a
-per-source decision.
+`#personal-<keycloak-user-id>:knarr.local` — a Matrix space the user
+solely inhabits, marked managed, with a Keycloak-user reference
+attribute. The alias derives from the immutable Keycloak user id (a
+UUID), not the human-readable username, so renames and collisions
+don't break the routing. The user's display-name + avatar live
+separately on the Matrix room's `m.room.name` / `m.room.avatar` state
+events and can be edited freely without re-aliasing.
+
+Any future `user/<keycloak-user-id>`-scoped instances route content
+into this space (with optional sub-room organisation the user adjusts
+later). "Where does my personal Knarr stuff land" becomes a one-time
+setup, not a per-source decision.
 
 ### Explicitly out of scope here
 
@@ -245,7 +321,7 @@ per-source decision.
 
 ### Steady-state flow (no replies yet)
 
-```
+```text
 [Source platform]
   ↓  (poll / stream, dedupe, extract)
 [WatcherInstance]              ← per (platform, access_path, scope, credentials)
@@ -274,12 +350,22 @@ the difference is which adapter it loads (`ApiAdapter`,
 `AdminAppAdapter`, `ScrapeAdapter`, `EmailExtractAdapter`). Adapters
 are stateless except for a dedup cursor (last-seen timestamp or event
 id), which lives in a small per-instance KV store (Valkey — already
-provisioned per the OG design). Instances run as their own
-deployments, one per `(platform, scope)` tuple, so scaling, restarts,
-and credential rotation are per-instance. On poll: pull new events
-since cursor → dedupe → emit to `knarr.watch.alerts` with full
-metadata (instance id, scope, access path, source event id, raw
-content, link back to original).
+provisioned per the OG design). On poll: pull new events since cursor
+→ dedupe → emit to `knarr.watch.alerts` with full metadata (instance
+id, scope, access path, source event id, raw content, link back to
+original).
+
+**Logical instance vs deployment topology** — distinct concerns.
+Phase 1 hosts all logical instances in **one watcher pod** (each
+instance gets its own asyncio poll loop within the process), which is
+the right shape while we have two instances on a single k3d cluster.
+Splitting to one-pod-per-instance becomes useful when (a) per-instance
+restart/scale isolation matters, (b) credential blast-radius needs
+hardening, or (c) instances grow into different resource shapes
+(scrape instances will want a headed-browser sidecar; API instances
+won't). The `WatcherInstance` class is host-agnostic — it doesn't know
+whether it shares a process with siblings or has its own pod — so
+splitting later is a deployment-manifest change, not a code change.
 
 **`HeadedBrowserSidecar`.** One pool per node (typically a homelab
 desktop running an X session). Persistent profiles per scope on disk
@@ -382,7 +468,7 @@ into AI summarisation independently.
 
 ## Reply-from-Matrix loop
 
-```
+```text
 [Matrix user reaction / reply in thread]
   ↓
 [Matrix bot picks up]
@@ -437,6 +523,101 @@ already there.
   "render this event for human consumption" service. Build separately
   for now; if the convergence holds across a year of operation,
   extract a shared service. Not gating either system on the other.
+
+---
+
+## Forward-looking: deployment topologies and satellites
+
+Phase 1 hosts every `WatcherInstance` in a single watcher pod inside
+the central Knarr deployment. The architecture should not preclude
+two future-state shapes; this section captures them so today's design
+calls stay compatible without committing to building either yet.
+
+### Satellite hosts for sensitive-credential scopes
+
+Power users (Group A and B) may want to run sensitive parts of their
+own Knarr footprint on hardware they control — a homelab box, a
+personal VPS — rather than handing credentials to the central
+deployment. Examples:
+
+- A user's personal Facebook session cookie should ideally never
+  leave their machine. Today's design assumes it lives in a K8s
+  secret on the central cluster; a satellite shape lets it stay on
+  the user's host.
+- The Gmail-API token for the email-extract path is similarly
+  personal. A satellite can hold it, do the IMAP+scrape locally, and
+  publish the extracted events upstream.
+- Headed-browser scrape sessions ("act as me on Nextdoor") look more
+  legitimate when they come from the user's actual home IP rather
+  than a cloud egress.
+
+The shape: a satellite is a small process — much lighter than a full
+Bluesky PDS, but loosely the same federation spirit — that hosts
+`WatcherInstance`s scoped to that user (or a subgroup they
+administer). The satellite holds its own credentials, runs its own
+adapters (including the headed-browser sidecar where needed), and
+publishes events into the central Knarr's Kafka over an
+authenticated channel (mTLS or token). Routing, AI summarize, and
+Matrix delivery still happen centrally.
+
+For community-managed sources the central deployment can advertise
+"this community needs an update poll, who's available?" and one of
+the online satellites takes the cycle — distributing the "looks like
+a human" burden across volunteers, rotating naturally with who's
+online.
+
+**What today's design needs to do (and not do) to stay compatible:**
+
+- The `WatcherInstance` interface is already host-agnostic — it
+  doesn't know whether it shares a process with siblings or owns its
+  own pod or runs on a satellite. ✓
+- The `scope` axis already cleanly separates "who owns this content"
+  from "where it physically runs." ✓
+- The Kafka publish path is already a writer abstraction — a
+  satellite using authenticated Kafka credentials is a config
+  change, not an architectural change. ✓
+- A future `host_hint` field on `InstanceConfig` (`central` /
+  `satellite/<id>`) could carry placement preference, but adding it
+  now is YAGNI — Phase 1 only has a central host, and adding it
+  later is a non-breaking schema extension.
+- The `knarr cred capture` flow (Phase 4 / Phase 0 spillover) ought
+  to be runnable from either central or satellite; the CLI
+  abstraction means the same binary works in both places.
+
+**Cost worth being honest about.** Satellites add real operational
+complexity — secure Kafka ingress, satellite lifecycle (start/stop,
+version drift), credential bootstrap on a new satellite, observation
+across hosts. Probably worth it for the trust posture and
+legitimacy-of-action benefits, but not before there's enough demand
+to justify the operations work. Not on the immediate roadmap; the
+design just leaves the door open.
+
+### Per-instance pods within the central deployment
+
+A simpler precursor to satellites: split the single watcher pod into
+one pod per instance, all on the central cluster. Useful when (a)
+per-instance restart isolation matters, (b) credential blast-radius
+needs hardening, or (c) instances grow into different resource shapes
+(scrape instances will want a headed-browser sidecar; API instances
+won't). This is a deployment-manifest change, not a code change —
+the `WatcherInstance` class doesn't care whether siblings share a
+process. Likely the first split after Phase 4 introduces the
+headed-browser sidecar, since that pod really doesn't want to be
+co-located with stateless API-poll instances.
+
+### Federation parallels worth knowing about
+
+- **Matrix federation** already does the heavy lifting for the
+  outbound side (a Knarr-on-satellite-A user's account can federate
+  with a Knarr-on-satellite-B user via standard Matrix; nothing
+  Knarr-specific needed).
+- **AT Protocol PDS** is the closest conceptual fit for the
+  satellite model on the inbound side — each user (or small group)
+  could host their own data, with the central Knarr doing the
+  fan-in/out.
+- We're not committing to building either pattern now; the existing
+  design just stays compatible so a future ATProto-style federation
+  layer (or a custom one) could land without re-architecting.
 
 ---
 
@@ -595,8 +776,15 @@ without breaking what's there.
 
 ## Future public-docs candidate
 
-The "Knarr is for community admins and moderators, not casual users"
-framing deserves a top-line position in eventual public docs so
-expectations are set early. It changes the answer to "should I use
-Knarr?" from a confusing maybe (a casual platform user would correctly
-conclude no) to a clear yes/no based on the reader's role.
+The three-user-groups framing (Audience section above) deserves a
+top-line position in eventual public docs so expectations are set
+early. It changes the answer to "should I use Knarr?" from a confusing
+maybe to a clear yes/no based on the reader's role: Group A (community
+admins/moderators) and Group B (personal curators) operate Knarr;
+Group C (community members) is *served* by it — usually without
+realising Knarr is between them and the community they care about.
+
+A public landing page that opens with "Knarr is the tool community
+admins use to keep their members in touch — without forcing anyone
+through ten different platforms — and a personal feed-curation tool
+for power users along the way" captures all three groups concisely.

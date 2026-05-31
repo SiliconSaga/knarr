@@ -8,6 +8,8 @@
 
 **Tech Stack:** Python 3.13, `httpx`, `confluent-kafka`, `pyyaml`, `pytest` (+ `pytest-bdd` for the integration scenarios). Kubernetes manifests via `kubectl apply`. Reconciler config schema lives in `src/admin/config_schema.py`. Tests run via `bash scripts/knarr` wrapper or `python3 -m pytest`.
 
+**Working directory assumption:** all `bash` commands in this plan run from the **yggdrasil workspace root** (where `scripts/ws` lives). Paths like `components/knarr/...` are workspace-relative. When a step needs to run from inside the knarr component (e.g., `python3 -m pytest`), it `cd`s explicitly first. Agents executing this plan via worktrees should `cd` into the workspace root of the worktree.
+
 **Spec:** `docs/plans/2026-05-30-knarr-source-identity-design.md`. This plan covers Phase 1 (the WatcherInstance refactor) plus the minimum slice of Phase 0 the refactor actually needs (the new config schema). Personal-space provisioning, the `knarr cred` CLI, and full Keycloak integration are deferred to later phase plans when they're actually exercised.
 
 **Phase 0 deferred items** — explicitly not in this plan:
@@ -291,7 +293,7 @@ No consumers yet — schema lands first so the rest of the refactor
 can build on it.
 ```
 
-Run: `cd /Users/cervator/dev/git_ws/yggdrasil && bash scripts/ws commit knarr .commits/task1-instance-config-schema.md`
+Run: `bash scripts/ws commit knarr .commits/task1-instance-config-schema.md`
 
 ---
 
@@ -527,7 +529,7 @@ left broken; they get rewritten in subsequent tasks as the
 adapter/instance refactor lands.
 ```
 
-Run: `cd /Users/cervator/dev/git_ws/yggdrasil && bash scripts/ws commit knarr .commits/task2-new-schema.md`
+Run: `bash scripts/ws commit knarr .commits/task2-new-schema.md`
 
 ---
 
@@ -679,7 +681,7 @@ WatcherInstance (next task) hosts an Adapter and persists the cursor
 between poll cycles, keeping the runtime agnostic to platform shape.
 ```
 
-Run: `cd /Users/cervator/dev/git_ws/yggdrasil && bash scripts/ws commit knarr .commits/task3-adapter-protocol.md`
+Run: `bash scripts/ws commit knarr .commits/task3-adapter-protocol.md`
 
 ---
 
@@ -909,7 +911,7 @@ Skips the producer.flush() call when there's nothing to publish so
 quiet poll cycles don't generate noise.
 ```
 
-Run: `cd /Users/cervator/dev/git_ws/yggdrasil && bash scripts/ws commit knarr .commits/task4-watcher-instance.md`
+Run: `bash scripts/ws commit knarr .commits/task4-watcher-instance.md`
 
 ---
 
@@ -1133,7 +1135,7 @@ class RedditApiAdapter:
 - [ ] **Step 4: Delete the legacy reddit_watcher**
 
 Run:
-```
+```bash
 rm components/knarr/src/watchers/reddit_watcher.py
 rm components/knarr/tests/test_reddit_watcher.py
 ```
@@ -1173,12 +1175,13 @@ The HTTP call goes through `_http_get` so tests can patch it
 without touching httpx internals.
 ```
 
-Run: `cd /Users/cervator/dev/git_ws/yggdrasil && bash scripts/ws commit knarr .commits/task5-reddit-adapter.md`
+Run: `bash scripts/ws commit knarr .commits/task5-reddit-adapter.md`
 
 **Note:** `ws commit` may not handle `delete:` frontmatter natively. If it doesn't, after the commit succeeds with the new files, run:
-```
+
+```bash
 cd components/knarr && git rm src/watchers/reddit_watcher.py tests/test_reddit_watcher.py
-cd /Users/cervator/dev/git_ws/yggdrasil && git -C components/knarr commit -m "refactor(watchers): remove legacy reddit_watcher (replaced by RedditApiAdapter)"
+git -C components/knarr commit -m "refactor(watchers): remove legacy reddit_watcher (replaced by RedditApiAdapter)"
 ```
 
 ---
@@ -1456,7 +1459,8 @@ class GitHubApiAdapter:
 - [ ] **Step 5: Delete the legacy github_watcher**
 
 Run:
-```
+
+```bash
 rm components/knarr/src/watchers/github_watcher.py
 rm components/knarr/tests/test_github_watcher.py
 ```
@@ -1496,12 +1500,13 @@ Legacy github_watcher.py removed in this commit (or a follow-up if
 ws commit doesn't handle delete frontmatter).
 ```
 
-Run: `cd /Users/cervator/dev/git_ws/yggdrasil && bash scripts/ws commit knarr .commits/task6-github-adapter.md`
+Run: `bash scripts/ws commit knarr .commits/task6-github-adapter.md`
 
 If `ws commit` skipped the deletes, run the cleanup commit:
-```
+
+```bash
 cd components/knarr && git rm src/watchers/github_watcher.py tests/test_github_watcher.py
-cd /Users/cervator/dev/git_ws/yggdrasil && git -C components/knarr commit -m "refactor(watchers): remove legacy github_watcher (replaced by GitHubApiAdapter)"
+git -C components/knarr commit -m "refactor(watchers): remove legacy github_watcher (replaced by GitHubApiAdapter)"
 ```
 
 ---
@@ -1550,19 +1555,39 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 
-def _resolve_credential(ref: dict | None) -> str | None:
+class CredentialError(RuntimeError):
+    """An instance declared credentials_ref but the secret is missing at runtime."""
+
+
+def _resolve_credential(ref: dict | None, instance_id: str) -> str | None:
     """Read the secret value from the env var named by ref.secret_key.
 
     K8s mounts the secret via valueFrom.secretKeyRef into an env var. The
     env var name matches the secret's key field. Returns None if ref is
     None (instance requires no auth).
+
+    Fails fast when a credentials_ref IS configured but the env var is
+    unset or empty — silently degrading to anonymous calls masks real
+    secret-wiring mistakes (e.g., the secretKeyRef points at a Secret
+    that doesn't exist, or the Secret key was renamed).
     """
     if ref is None:
         return None
     env_var = ref.get("secret_key")
     if not env_var:
-        return None
-    return os.environ.get(env_var)
+        raise CredentialError(
+            f"instance={instance_id}: credentials_ref configured but "
+            f"secret_key missing from the ref dict ({ref!r})"
+        )
+    value = os.environ.get(env_var)
+    if not value:
+        raise CredentialError(
+            f"instance={instance_id}: credentials_ref names env var "
+            f"{env_var!r} but it is unset or empty. Check the pod's "
+            f"secretKeyRef wiring against Secret "
+            f"{ref.get('secret_name')!r}."
+        )
+    return value
 
 
 def build_adapter(config: InstanceConfig):
@@ -1580,7 +1605,7 @@ def build_adapter(config: InstanceConfig):
             instance_id=config.id,
             scope=config.scope,
             repos=config.platform_config["repos"],
-            token=_resolve_credential(config.credentials_ref),
+            token=_resolve_credential(config.credentials_ref, config.id),
         )
     raise ValueError(
         f"No adapter registered for platform={p!r} access_path={a!r} "
@@ -1692,7 +1717,7 @@ The new config path defaults to /etc/knarr/config.yaml — k8s manifest
 update in a follow-up task mounts the ConfigMap there.
 ```
 
-Run: `cd /Users/cervator/dev/git_ws/yggdrasil && bash scripts/ws commit knarr .commits/task7-run-loop.md`
+Run: `bash scripts/ws commit knarr .commits/task7-run-loop.md`
 
 ---
 
@@ -1860,7 +1885,7 @@ Message shape: `[platform] type: title` header, optional `by author`,
 optional ~200-char body preview, raw_post_ref link.
 ```
 
-Run: `cd /Users/cervator/dev/git_ws/yggdrasil && bash scripts/ws commit knarr .commits/task8-router-new-envelope.md`
+Run: `bash scripts/ws commit knarr .commits/task8-router-new-envelope.md`
 
 ---
 
@@ -2020,7 +2045,7 @@ add:
   validation.
 ```
 
-Run: `cd /Users/cervator/dev/git_ws/yggdrasil && bash scripts/ws commit knarr .commits/task9-config-instances.md`
+Run: `bash scripts/ws commit knarr .commits/task9-config-instances.md`
 
 ---
 
@@ -2060,7 +2085,7 @@ top-level now, rooms no longer carry inline watcher blocks). Lifecycle
 assertions otherwise unchanged.
 ```
 
-Run: `cd /Users/cervator/dev/git_ws/yggdrasil && bash scripts/ws commit knarr .commits/task10-bdd-adjustments.md`
+Run: `bash scripts/ws commit knarr .commits/task10-bdd-adjustments.md`
 
 - [ ] **Step 5: Mark BDD validated**
 
@@ -2108,8 +2133,14 @@ data:
       router: "@knarr-router:knarr.local"
       bridge_bot: "@discordbot:knarr.local"
 
+    # Path is relative to knarr.yaml's directory inside the pod
+    # (/etc/knarr/). Both knarr.yaml and test.yaml are mounted as flat
+    # keys of the same ConfigMap, so the community path here is the
+    # bare filename, NOT `config/test.yaml`. The in-tree
+    # `config/knarr.yaml` uses `config/test.yaml` because the on-disk
+    # layout differs from the pod's mount layout — that's expected.
     communities:
-      - config/test.yaml
+      - test.yaml
 
     instances:
       - id: reddit-terasology
@@ -2136,9 +2167,9 @@ data:
           secret_name: knarr-cred-community-terasology-gh-pat
           secret_key: GITHUB_TOKEN
 
-  # community config carried alongside so load_config()'s
-  # community_loader can find `config/test.yaml` relative to
-  # knarr.yaml's directory.
+  # community config carried alongside under the same /etc/knarr/
+  # mount so load_config()'s community_loader can find `test.yaml`
+  # relative to knarr.yaml's directory.
   test.yaml: |
     community: knarr-test
     display_name: "Knarr Test"
@@ -2252,7 +2283,7 @@ is deferred — see the source-identity arc for when this gets
 reconciler-driven.
 ```
 
-Run: `cd /Users/cervator/dev/git_ws/yggdrasil && bash scripts/ws commit knarr .commits/task11-k8s-configmap.md`
+Run: `bash scripts/ws commit knarr .commits/task11-k8s-configmap.md`
 
 ---
 
@@ -2385,7 +2416,7 @@ add:
   reconciler).
 ```
 
-Run: `cd /Users/cervator/dev/git_ws/yggdrasil && bash scripts/ws commit knarr .commits/task13-docs.md`
+Run: `bash scripts/ws commit knarr .commits/task13-docs.md`
 
 ---
 
@@ -2411,7 +2442,7 @@ Expected: lint clean + all unit tests pass.
 
 - [ ] **Step 3: Push the branch**
 
-Run: `cd /Users/cervator/dev/git_ws/yggdrasil && bash scripts/ws push knarr`
+Run: `bash scripts/ws push knarr`
 Expected: branch pushed; remote prints the PR-create URL.
 
 - [ ] **Step 4: Draft the CR body**
@@ -2475,7 +2506,7 @@ adapters).
 
 - [ ] **Step 5: Open the PR**
 
-Run: `cd /Users/cervator/dev/git_ws/yggdrasil && bash scripts/ws cr knarr "feat(watchers): Phase 1 — WatcherInstance refactor" .crs/knarr-source-identity-phase-1.md`
+Run: `bash scripts/ws cr knarr "feat(watchers): Phase 1 — WatcherInstance refactor" .crs/knarr-source-identity-phase-1.md`
 Expected: PR URL printed.
 
 - [ ] **Step 6: Tag the source-identity arc as Phase 1 in flight**
