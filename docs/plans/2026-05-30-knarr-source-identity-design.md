@@ -619,6 +619,57 @@ co-located with stateless API-poll instances.
   design just stays compatible so a future ATProto-style federation
   layer (or a custom one) could land without re-architecting.
 
+### Satellite spectrum: homelab → browser extension → tab
+
+"Satellite" isn't necessarily a homelab process. The same architectural
+role can be played by progressively lighter hosts, and the right tier
+depends entirely on the platform's API openness:
+
+- **Homelab process (heaviest).** Always-on, supports any access path
+  including the headed-browser scrape sidecar, holds long-lived
+  credentials at rest. Required for hostile platforms (Facebook,
+  Nextdoor, LinkedIn) where cross-origin authenticated requests are
+  off the table. Highest setup bar; only Group A/B technical users.
+- **Browser extension (middle).** Has explicit host permissions for
+  the platforms it monitors; can do cross-origin authenticated fetches
+  using the user's existing browser session; passively snapshots
+  content the user already loaded in normal browsing plus active
+  background polls (Manifest V3 alarms). For hostile platforms this is
+  arguably the *best* anti-detection shape — the requests come from
+  the user's real browser, real IP, real session, and look
+  indistinguishable from normal usage. Install bar is "click install
+  in Chrome Web Store." Manifest V3 lockdown is shifting sand though;
+  worth watching upstream before committing.
+- **Pure tab / web page (lightest).** Open `satellite.knarr.local`,
+  log in, leave running. JavaScript holds a WebSocket to central,
+  picks up advertised polling cycles. Constrained by same-origin
+  policy — can only meaningfully poll platforms that expose
+  CORS-friendly APIs. Conveniently, that includes the platforms most
+  worth federating with anyway: **Bluesky (AT Protocol), Mastodon,
+  GitHub public APIs**, some Reddit endpoints. Setup is literally
+  "click a bookmark," accessible to Group C users.
+
+The interesting tension: the two satellite benefits split apart across
+tiers. **Credential locality + anti-detection legitimacy** are both
+fully delivered by the homelab tier (and to a large extent by the
+browser-extension tier for hostile platforms). The pure-tab tier
+delivers neither for hostile platforms (CORS shuts the door) but does
+deliver the distributed-legitimacy-across-real-humans benefit cheaply
+for open-API platforms (a thousand open tabs polling Bluesky one
+request each per hour is more sustainable than one central machine
+polling 1000 times per hour, even though the open API doesn't care).
+
+**Implication for today's architecture:** none. The same
+`WatcherInstance` protocol that lets a Python pod publish to central
+Kafka would let a browser extension or a tab publish to central via
+WebSocket or HTTPS POST (with Kafka behind the scenes). Phase 1's
+"WatcherInstance is host-agnostic" property already covers it. The
+satellite-spectrum work is its own multi-phase effort whenever it
+happens; mentioning it here just signals that the design doesn't
+preclude the lighter tiers, and that the mundane-user wedge (Group C
+contributing legitimacy cycles via open-API platforms) is genuinely
+achievable when we get there.
+
 ---
 
 ## Phasing
@@ -629,8 +680,9 @@ driver (refactor first, no new source).
 ### Phase 0 — Identity scaffolding
 
 - Extend Keycloak user model with `personal_space_room_id` attribute.
-- Reconciler provisions `#<user>-personal:knarr.local` for any user
-  without one.
+- Reconciler provisions `#personal-<keycloak-user-id>:knarr.local` for
+  any user without one (canonical immutable-id alias pattern — see
+  Per-user space provisioning above).
 - K8s secret naming convention documented and enforced.
 - New CLI: `knarr cred create | capture | rotate | revoke`.
 - Define `WatcherInstance` config schema.

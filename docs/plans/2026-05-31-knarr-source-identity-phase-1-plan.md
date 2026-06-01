@@ -1135,6 +1135,7 @@ class RedditApiAdapter:
 - [ ] **Step 4: Delete the legacy reddit_watcher**
 
 Run:
+
 ```bash
 rm components/knarr/src/watchers/reddit_watcher.py
 rm components/knarr/tests/test_reddit_watcher.py
@@ -2228,13 +2229,17 @@ spec:
               value: "/etc/knarr/knarr.yaml"
             # Credentials referenced by instance configs land here as env vars,
             # one per credentials_ref.secret_key. The watcher pod resolves them
-            # via os.environ at instance build time.
+            # via os.environ at instance build time and fails fast (per Task 7's
+            # _resolve_credential) when a credentials_ref is configured but the
+            # env var is unset — so the Secret here must exist. Operators who
+            # want anonymous github polling instead should remove the
+            # credentials_ref block from the github instance in the embedded
+            # knarr.yaml above, AND remove this secretKeyRef.
             - name: GITHUB_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: knarr-cred-community-terasology-gh-pat
                   key: GITHUB_TOKEN
-                  optional: true   # Phase 1 acceptable to run without
           volumeMounts:
             - name: config
               mountPath: /etc/knarr
@@ -2273,9 +2278,15 @@ mounted at /etc/knarr — the same knarr.yaml + test.yaml the CLI
 consumes. Watcher pod loads the instance list via load_config() and
 spins up the right adapters.
 
-GITHUB_TOKEN now wired via secretKeyRef (optional: true so Phase 1 can
-still run without the PAT — the GitHub adapter will hit unauthenticated
-rate limits, same as before).
+GITHUB_TOKEN now wired via secretKeyRef. The Secret is required at
+pod startup — Task 7's `_resolve_credential` fails fast when an
+instance declares `credentials_ref` but the named env var is unset,
+to surface secret-wiring mistakes rather than silently degrade to
+anonymous calls. If an operator wants anonymous github polling
+(low rate limits but no secret to manage), they remove both the
+`credentials_ref` block from the github instance in the embedded
+knarr.yaml AND the corresponding secretKeyRef entry from this pod's
+env list.
 
 The Phase 0 follow-up to generate the ConfigMap from the source
 config/knarr.yaml automatically (rather than hand-duplicating it here)
