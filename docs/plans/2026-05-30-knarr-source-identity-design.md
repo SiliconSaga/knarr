@@ -766,9 +766,11 @@ intervention beyond the one-time login.
   labels). Adapter is provider-aware: if/when we add non-Gmail
   mailboxes later, that's a separate adapter variant (IMAP read + a
   different cleanup story like move-to-folder).
-- `gmail.labels`-only OAuth scope; documented one-time Gmail filter
-  setup on the user side (filter auto-archives or trashes anything
-  labeled `knarr/processed`).
+- `gmail.modify` OAuth scope (same as the Identity & credentials
+  section above — least-privilege that supports
+  `users.messages.modify` for label-application); documented one-time
+  Gmail filter setup on the user side (filter auto-archives or
+  trashes anything labeled `knarr/processed`).
 - First target: Nextdoor (highest-pain de-enshittification case) or a
   non-admin FB Group whose email digests link to posts.
 - Sidecar reused for the scrape half (follow the link in the email,

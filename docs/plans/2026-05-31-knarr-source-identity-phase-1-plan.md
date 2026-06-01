@@ -49,7 +49,7 @@ owns the cursor's *meaning*.
 - `src/admin/config_schema.py` — add `InstanceConfig` dataclass + parse `instances:` key
 - `src/router/kafka_consumer.py` — consume new envelope shape, same Matrix message output
 - `config/test.yaml` — rewrite as `instances:` list rather than `rooms.watchers:`
-- `k8s/watchers/reddit-github.yaml` → renamed `k8s/watchers/watchers.yaml`, ConfigMap-mounted instance config
+- `k8s/watchers/reddit-github.yaml` — kept as-is (no rename; renaming would mean updating every reference in apply scripts, the rebuild section in operations.md, the BDD setup, and the rollout instructions — disproportionate churn for Phase 1). Phase 2+ may rename to `watchers.yaml` if that's clearly the right ergonomic when more instances land.
 - `tests/test_schemas.py` — assertions for new envelope fields
 - `tests/test_router.py` — fixture updated for new envelope
 - `tests/test_config_schema.py` — assertions for `instances:` parsing
@@ -202,12 +202,37 @@ def test_validate_rejects_credentials_ref_missing_secret_name():
     config = KnarrConfig.from_dict(bad, community_loader=lambda _: VALID_COMMUNITY)
     with pytest.raises(ConfigError, match="secret_name"):
         validate_config(config)
+
+
+def test_validate_rejects_non_string_secret_key():
+    """isinstance check: non-string secret_key (e.g. accidental YAML int)
+    would crash _resolve_credential's os.environ.get(env_var) at runtime;
+    catch it at config-validate time instead."""
+    bad = {
+        **VALID_INDEX,
+        "instances": [{
+            "id": "broken",
+            "platform": "github",
+            "access_path": "api",
+            "scope": "community/terasology",
+            "polling": {"interval_seconds": 100},
+            "platform_config": {"repos": ["a/b"]},
+            "target_room": "social-watch",
+            "credentials_ref": {
+                "secret_name": "knarr-cred-x",
+                "secret_key": 42,                # not a string
+            },
+        }],
+    }
+    config = KnarrConfig.from_dict(bad, community_loader=lambda _: VALID_COMMUNITY)
+    with pytest.raises(ConfigError, match="secret_key.*must be a string"):
+        validate_config(config)
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd components/knarr && python3 -m pytest tests/test_config_schema.py::test_parse_instances_block tests/test_config_schema.py::test_parse_instances_defaults_to_empty tests/test_config_schema.py::test_validate_rejects_instance_with_unknown_scope_type tests/test_config_schema.py::test_parse_instance_rejects_non_string_scope tests/test_config_schema.py::test_validate_rejects_credentials_ref_missing_secret_key tests/test_config_schema.py::test_validate_rejects_credentials_ref_missing_secret_name -v`
-Expected: 6 failures. The first two fail with `AttributeError: 'KnarrConfig' object has no attribute 'instances'`. The third + sixth fail because the checks don't exist yet. The fourth (non-string scope) fails because `_require_str` isn't called yet. The fifth (missing secret_key) fails for the same reason as the third.
+Run: `cd components/knarr && python3 -m pytest tests/test_config_schema.py -k "instance" -v`
+Expected: 7 failures across the new test set. The two parse/defaults tests fail with `AttributeError: 'KnarrConfig' object has no attribute 'instances'`. The scope-prefix and credentials_ref-shape checks fail because they don't exist yet. The non-string-scope test fails because `_require_str` isn't called yet. The non-string-secret_key test fails because the `isinstance` check doesn't exist yet.
 
 - [ ] **Step 3: Add InstanceConfig dataclass + parsing**
 
@@ -338,17 +363,33 @@ Add the scope-prefix check + credentials_ref shape check inside
                 f"one of {_VALID_SCOPE_PREFIXES}"
             )
         if inst.credentials_ref is not None:
-            # Both fields are required so we can catch missing entries at
-            # `config validate` time, not at watcher pod startup.
-            if not inst.credentials_ref.get("secret_name"):
+            # Both fields are required AND must be strings so we can
+            # catch missing/malformed entries at `config validate` time
+            # rather than at watcher pod startup. _resolve_credential
+            # later does `env_var = ref.get("secret_key")` and passes it
+            # to `os.environ.get(env_var)`, which would TypeError on a
+            # non-string key.
+            secret_name = inst.credentials_ref.get("secret_name")
+            if not secret_name:
                 errors.append(
                     f"Instance '{inst.id}': credentials_ref.secret_name "
                     f"is required when credentials_ref is set"
                 )
-            if not inst.credentials_ref.get("secret_key"):
+            elif not isinstance(secret_name, str):
+                errors.append(
+                    f"Instance '{inst.id}': credentials_ref.secret_name "
+                    f"must be a string, got {type(secret_name).__name__}"
+                )
+            secret_key = inst.credentials_ref.get("secret_key")
+            if not secret_key:
                 errors.append(
                     f"Instance '{inst.id}': credentials_ref.secret_key "
                     f"is required when credentials_ref is set"
+                )
+            elif not isinstance(secret_key, str):
+                errors.append(
+                    f"Instance '{inst.id}': credentials_ref.secret_key "
+                    f"must be a string, got {type(secret_key).__name__}"
                 )
 ```
 
@@ -1269,10 +1310,10 @@ without touching httpx internals.
 
 Run: `bash scripts/ws commit knarr .commits/task5-reddit-adapter.md`
 
-**Note:** `ws commit` may not handle `delete:` frontmatter natively. If it doesn't, after the commit succeeds with the new files, run:
+**Note:** `ws commit` may not handle `delete:` frontmatter natively. If it doesn't, after the commit succeeds with the new files, run (from yggdrasil workspace root throughout — `git -C` keeps each call independent of cwd):
 
 ```bash
-cd components/knarr && git rm src/watchers/reddit_watcher.py tests/test_reddit_watcher.py
+git -C components/knarr rm src/watchers/reddit_watcher.py tests/test_reddit_watcher.py
 git -C components/knarr commit -m "refactor(watchers): remove legacy reddit_watcher (replaced by RedditApiAdapter)"
 ```
 
@@ -1594,10 +1635,10 @@ ws commit doesn't handle delete frontmatter).
 
 Run: `bash scripts/ws commit knarr .commits/task6-github-adapter.md`
 
-If `ws commit` skipped the deletes, run the cleanup commit:
+If `ws commit` skipped the deletes, run the cleanup commit (from yggdrasil workspace root — `git -C` keeps each call independent of cwd):
 
 ```bash
-cd components/knarr && git rm src/watchers/github_watcher.py tests/test_github_watcher.py
+git -C components/knarr rm src/watchers/github_watcher.py tests/test_github_watcher.py
 git -C components/knarr commit -m "refactor(watchers): remove legacy github_watcher (replaced by GitHubApiAdapter)"
 ```
 
@@ -1874,26 +1915,36 @@ def _github_alert() -> WatchAlert:
     )
 
 
-def test_deserialize_round_trips_new_envelope():
+def test_deserialize_round_trips_new_envelope_from_bytes():
+    """deserialize_alert accepts the raw bytes Kafka hands the consumer."""
+    import json
     original = _reddit_alert()
-    data = original.to_kafka_dict()
-    rebuilt = deserialize_alert(data)
+    raw_bytes = json.dumps(original.to_kafka_dict()).encode("utf-8")
+    rebuilt = deserialize_alert(raw_bytes)
     assert rebuilt == original
 
 
-def test_format_reddit_alert_includes_title_author_and_link():
+def test_deserialize_alert_returns_none_on_malformed_bytes():
+    """Survives one bad event without crashing the consumer loop."""
+    assert deserialize_alert(b"not json") is None
+
+
+def test_format_reddit_alert_uses_emoji_header_and_full_body():
     msg = format_alert_message(_reddit_alert())
-    assert "First post" in msg
-    assert "cervator" in msg
+    # Emoji + bold Reddit header + instance id sub-identifier
+    assert "Reddit" in msg
+    assert "reddit-terasology" in msg
+    # Full body preserved (not truncated)
+    assert "Hello world" in msg
+    # Link present with link emoji
     assert "https://www.reddit.com/r/Terasology/comments/post1/title/" in msg
 
 
-def test_format_github_alert_includes_type_title_and_repo():
+def test_format_github_alert_uses_emoji_header_and_instance_id():
     msg = format_alert_message(_github_alert())
-    assert "Some bug" in msg
-    # type or repo appears so a reader can see this is a github issue
-    assert "issue" in msg.lower()
-    assert "MovingBlocks/Terasology" in msg
+    assert "Github" in msg
+    assert "github-terasology" in msg
+    assert "https://github.com/MovingBlocks/Terasology/issues/42" in msg
     assert "https://github.com/MovingBlocks/Terasology/issues/42" in msg
 ```
 
@@ -1912,34 +1963,70 @@ Replace `src/router/kafka_consumer.py` with:
 Phase 1: thin pass-through — read one event, format one Matrix message,
 post it. Phase 2 introduces presentation_mode (summarised vs raw-threaded)
 along with the AI summarize stage.
+
+Phase 1 preserves today's user-visible behaviour as closely as the new
+envelope allows: emoji + bold platform header, full message body, link
+on its own line with the link emoji. The legacy `source.channel`
+sub-header (e.g. `r/Terasology`, `MovingBlocks/Terasology`) becomes
+the instance_id (e.g. `reddit-terasology`, `github-terasology`) because
+the new envelope dropped the `Source` dataclass — the routing identity
+is now scope + instance_id, not platform + channel.
 """
+
+import json
+import logging
 
 from src.watchers.schemas import WatchAlert
 
+logger = logging.getLogger(__name__)
 
-def deserialize_alert(data: dict) -> WatchAlert:
-    return WatchAlert.from_kafka_dict(data)
+PLATFORM_EMOJI = {
+    "reddit": "\U0001f4e2",
+    "github": "\U0001f4bb",
+    "steam": "\U0001f3ae",
+    "twitter": "\U0001f426",
+    "youtube": "\U0001f3ac",
+    "bluesky": "\U0001f98b",
+    "facebook": "\U0001f4d8",
+    "nextdoor": "\U0001f3d8️",
+}
+
+
+def deserialize_alert(raw: bytes) -> WatchAlert | None:
+    """Deserialize a Kafka message value into a WatchAlert.
+
+    Accepts the raw bytes that `msg.value()` hands the consumer in
+    src/router/main.py; JSON-decodes internally; returns None on
+    malformed input so the consumer loop can log + continue rather
+    than crash on one bad event.
+    """
+    try:
+        data = json.loads(raw)
+        return WatchAlert.from_kafka_dict(data)
+    except (json.JSONDecodeError, KeyError) as e:
+        logger.warning("Failed to deserialize alert: %s", e)
+        return None
 
 
 def format_alert_message(alert: WatchAlert) -> str:
     """Format a WatchAlert as a single Matrix message (Phase 1 behaviour).
 
-    Shape: short header line with platform + type + title, then author/source
-    on the next line, then the link. Body preview included when present
-    (capped at ~200 chars to avoid eating channel real-estate).
+    Preserves today's shape: emoji + bold platform header with the
+    instance id as the sub-identifier (legacy `source.channel`
+    equivalent), full message body, link on its own line with the link
+    emoji. Body is not truncated — Phase 2's `summarized` presentation
+    mode is where headline trimming arrives.
     """
-    c = alert.content
-    header = f"[{alert.platform}] {c.type}: {c.title}".strip()
+    emoji = PLATFORM_EMOJI.get(alert.platform, "\U0001f514")
+    platform = alert.platform.capitalize()
 
-    parts = [header]
-    if c.author:
-        parts.append(f"by {c.author}")
-    if c.body:
-        preview = c.body[:200] + ("…" if len(c.body) > 200 else "")
-        parts.append(preview)
-    parts.append(alert.raw_post_ref)
-
-    return "\n".join(parts)
+    lines = [
+        f"{emoji} **{platform}** — {alert.instance_id}",
+        f"{alert.content.body}",
+    ]
+    if alert.raw_post_ref:
+        lines.append(f"\U0001f517 {alert.raw_post_ref}")
+    return "\n".join(lines)
 ```
 
 - [ ] **Step 5: Run tests to verify they pass**
@@ -2188,8 +2275,7 @@ Note in your local notes: BDD lifecycle green against k3d. Move on.
 ## Task 11 — Update K8s manifest for ConfigMap-driven instances
 
 **Files:**
-- Modify (rename): `components/knarr/k8s/watchers/reddit-github.yaml` → `components/knarr/k8s/watchers/watchers.yaml`
-- Modify: any kustomization or apply-time script that references the old filename.
+- Modify: `components/knarr/k8s/watchers/reddit-github.yaml` (kept at the existing filename; see File map note above).
 
 - [ ] **Step 1: Inspect the current deployment manifest**
 
