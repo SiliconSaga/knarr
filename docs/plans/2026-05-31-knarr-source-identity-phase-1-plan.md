@@ -143,12 +143,71 @@ def test_validate_rejects_instance_with_unknown_scope_type():
     config = KnarrConfig.from_dict(bad, community_loader=lambda _: VALID_COMMUNITY)
     with pytest.raises(ConfigError, match="scope"):
         validate_config(config)
+
+
+def test_parse_instance_rejects_non_string_scope():
+    """Non-string scope is caught at parse time, not at validate_config."""
+    bad = {
+        **VALID_INDEX,
+        "instances": [{
+            "id": "broken",
+            "platform": "reddit",
+            "access_path": "api",
+            "scope": 42,   # YAML int — invalid
+            "polling": {"interval_seconds": 100},
+            "platform_config": {},
+            "target_room": "social-watch",
+        }],
+    }
+    with pytest.raises(ConfigError, match="scope"):
+        KnarrConfig.from_dict(bad, community_loader=lambda _: VALID_COMMUNITY)
+
+
+def test_validate_rejects_credentials_ref_missing_secret_key():
+    """credentials_ref shape is caught at `config validate` time,
+    not at watcher pod startup."""
+    bad = {
+        **VALID_INDEX,
+        "instances": [{
+            "id": "broken",
+            "platform": "github",
+            "access_path": "api",
+            "scope": "community/terasology",
+            "polling": {"interval_seconds": 100},
+            "platform_config": {"repos": ["a/b"]},
+            "target_room": "social-watch",
+            "credentials_ref": {"secret_name": "knarr-cred-x"},  # missing secret_key
+        }],
+    }
+    config = KnarrConfig.from_dict(bad, community_loader=lambda _: VALID_COMMUNITY)
+    with pytest.raises(ConfigError, match="secret_key"):
+        validate_config(config)
+
+
+def test_validate_rejects_credentials_ref_missing_secret_name():
+    """Symmetric: secret_name also required."""
+    bad = {
+        **VALID_INDEX,
+        "instances": [{
+            "id": "broken",
+            "platform": "github",
+            "access_path": "api",
+            "scope": "community/terasology",
+            "polling": {"interval_seconds": 100},
+            "platform_config": {"repos": ["a/b"]},
+            "target_room": "social-watch",
+            "credentials_ref": {"secret_key": "GITHUB_TOKEN"},  # missing secret_name
+        }],
+    }
+    config = KnarrConfig.from_dict(bad, community_loader=lambda _: VALID_COMMUNITY)
+    with pytest.raises(ConfigError, match="secret_name"):
+        validate_config(config)
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd components/knarr && python3 -m pytest tests/test_config_schema.py::test_parse_instances_block tests/test_config_schema.py::test_parse_instances_defaults_to_empty tests/test_config_schema.py::test_validate_rejects_instance_with_unknown_scope_type -v`
-Expected: 3 failures. First two fail with `AttributeError: 'KnarrConfig' object has no attribute 'instances'`. Third fails because the unknown-scope check doesn't exist yet.
+Run: `cd components/knarr && python3 -m pytest tests/test_config_schema.py::test_parse_instances_block tests/test_config_schema.py::test_parse_instances_defaults_to_empty tests/test_config_schema.py::test_validate_rejects_instance_with_unknown_scope_type tests/test_config_schema.py::test_parse_instance_rejects_non_string_scope tests/test_config_schema.py::test_validate_rejects_credentials_ref_missing_secret_key tests/test_config_schema.py::test_validate_rejects_credentials_ref_missing_secret_name -v`
+Expected: 6 failures. The first two fail with `AttributeError: 'KnarrConfig' object has no attribute 'instances'`. The third + sixth fail because the checks don't exist yet. The fourth (non-string scope) fails because `_require_str` isn't called yet. The fifth (missing secret_key) fails for the same reason as the third.
 
 - [ ] **Step 3: Add InstanceConfig dataclass + parsing**
 
@@ -187,22 +246,39 @@ class InstanceConfig:
         for key in required:
             if key not in data:
                 raise ConfigError(f"instance is missing required field: {key}")
+        iid = data["id"]
         return cls(
-            id=data["id"],
-            platform=data["platform"],
-            access_path=data["access_path"],
-            scope=data["scope"],
-            polling=_require_mapping(data["polling"], f"instance.{data['id']}.polling"),
+            id=_require_str(iid, "instance.id"),
+            platform=_require_str(data["platform"], f"instance.{iid}.platform"),
+            access_path=_require_str(data["access_path"],
+                                     f"instance.{iid}.access_path"),
+            scope=_require_str(data["scope"], f"instance.{iid}.scope"),
+            polling=_require_mapping(data["polling"], f"instance.{iid}.polling"),
             platform_config=_require_mapping(
-                data["platform_config"], f"instance.{data['id']}.platform_config"),
-            target_room=data["target_room"],
+                data["platform_config"], f"instance.{iid}.platform_config"),
+            target_room=_require_str(data["target_room"],
+                                     f"instance.{iid}.target_room"),
             credentials_ref=(
                 _require_mapping(
                     data["credentials_ref"],
-                    f"instance.{data['id']}.credentials_ref")
+                    f"instance.{iid}.credentials_ref")
                 if data.get("credentials_ref") is not None else None
             ),
         )
+```
+
+This relies on a small new `_require_str` helper at the top of
+`config_schema.py` alongside `_require_mapping` and
+`_require_str_list`. If it doesn't already exist there, add:
+
+```python
+def _require_str(value: object, field_name: str) -> str:
+    """Coerce value to str or raise ConfigError with field context."""
+    if not isinstance(value, str):
+        raise ConfigError(
+            f"{field_name} must be a string, got {type(value).__name__}"
+        )
+    return value
 ```
 
 Then modify the `KnarrConfig` dataclass to include `instances`:
@@ -249,16 +325,31 @@ class KnarrConfig:
         )
 ```
 
-Add the scope-prefix check inside `validate_config`, immediately after the existing duplicate-key checks (right before `if errors:`):
+Add the scope-prefix check + credentials_ref shape check inside
+`validate_config`, immediately after the existing duplicate-key checks
+(right before `if errors:`):
 
 ```python
-    # NEW: validate instance scope prefixes
+    # NEW: validate instance scope prefixes + credentials_ref shape
     for inst in config.instances:
         if not any(inst.scope.startswith(p) for p in _VALID_SCOPE_PREFIXES):
             errors.append(
                 f"Instance '{inst.id}': scope '{inst.scope}' must start with "
                 f"one of {_VALID_SCOPE_PREFIXES}"
             )
+        if inst.credentials_ref is not None:
+            # Both fields are required so we can catch missing entries at
+            # `config validate` time, not at watcher pod startup.
+            if not inst.credentials_ref.get("secret_name"):
+                errors.append(
+                    f"Instance '{inst.id}': credentials_ref.secret_name "
+                    f"is required when credentials_ref is set"
+                )
+            if not inst.credentials_ref.get("secret_key"):
+                errors.append(
+                    f"Instance '{inst.id}': credentials_ref.secret_key "
+                    f"is required when credentials_ref is set"
+                )
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
