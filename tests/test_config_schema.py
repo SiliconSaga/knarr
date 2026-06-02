@@ -370,3 +370,153 @@ def test_nested_spaces():
     parent = community.spaces["parent"]
     assert "child" in parent.children
     assert "inner-room" in parent.children["child"].rooms
+
+
+def test_parse_instances_block():
+    """Top-level `instances:` parses into InstanceConfig dataclasses."""
+    cfg = {
+        **VALID_INDEX,
+        "instances": [
+            {
+                "id": "reddit-terasology",
+                "platform": "reddit",
+                "access_path": "api",
+                "scope": "community/terasology",
+                "credentials_ref": None,
+                "polling": {"interval_seconds": 21600},
+                "platform_config": {"subreddit": "Terasology"},
+                "target_room": "social-watch",
+            },
+            {
+                "id": "github-terasology",
+                "platform": "github",
+                "access_path": "api",
+                "scope": "community/terasology",
+                "credentials_ref": {
+                    "secret_name": "knarr-cred-community-terasology-gh-pat",
+                    "secret_key": "token",
+                },
+                "polling": {"interval_seconds": 21600},
+                "platform_config": {"repos": ["MovingBlocks/Terasology"]},
+                "target_room": "social-watch",
+            },
+        ],
+    }
+    parsed = KnarrConfig.from_dict(cfg, community_loader=lambda _: VALID_COMMUNITY)
+    assert len(parsed.instances) == 2
+    assert parsed.instances[0].id == "reddit-terasology"
+    assert parsed.instances[0].platform == "reddit"
+    assert parsed.instances[0].access_path == "api"
+    assert parsed.instances[0].scope == "community/terasology"
+    assert parsed.instances[0].credentials_ref is None
+    assert parsed.instances[0].polling["interval_seconds"] == 21600
+    assert parsed.instances[0].platform_config["subreddit"] == "Terasology"
+    assert parsed.instances[0].target_room == "social-watch"
+    assert parsed.instances[1].credentials_ref["secret_name"] == \
+        "knarr-cred-community-terasology-gh-pat"
+
+
+def test_parse_instances_defaults_to_empty():
+    """No `instances:` key → instances is an empty list."""
+    parsed = KnarrConfig.from_dict(VALID_INDEX, community_loader=lambda _: VALID_COMMUNITY)
+    assert parsed.instances == []
+
+
+def test_validate_rejects_instance_with_unknown_scope_type():
+    """Scope must use the canonical prefixes: community/, user/, group/."""
+    bad = {
+        **VALID_INDEX,
+        "instances": [{
+            "id": "broken",
+            "platform": "reddit",
+            "access_path": "api",
+            "scope": "garbage/terasology",
+            "polling": {"interval_seconds": 100},
+            "platform_config": {},
+            "target_room": "social-watch",
+        }],
+    }
+    config = KnarrConfig.from_dict(bad, community_loader=lambda _: VALID_COMMUNITY)
+    with pytest.raises(ConfigError, match="scope"):
+        validate_config(config)
+
+
+def test_parse_instance_rejects_non_string_scope():
+    """Non-string scope is caught at parse time, not at validate_config."""
+    bad = {
+        **VALID_INDEX,
+        "instances": [{
+            "id": "broken",
+            "platform": "reddit",
+            "access_path": "api",
+            "scope": 42,
+            "polling": {"interval_seconds": 100},
+            "platform_config": {},
+            "target_room": "social-watch",
+        }],
+    }
+    with pytest.raises(ConfigError, match="scope"):
+        KnarrConfig.from_dict(bad, community_loader=lambda _: VALID_COMMUNITY)
+
+
+def test_validate_rejects_credentials_ref_missing_secret_key():
+    """credentials_ref shape is caught at `config validate` time."""
+    bad = {
+        **VALID_INDEX,
+        "instances": [{
+            "id": "broken",
+            "platform": "github",
+            "access_path": "api",
+            "scope": "community/terasology",
+            "polling": {"interval_seconds": 100},
+            "platform_config": {"repos": ["a/b"]},
+            "target_room": "social-watch",
+            "credentials_ref": {"secret_name": "knarr-cred-x"},
+        }],
+    }
+    config = KnarrConfig.from_dict(bad, community_loader=lambda _: VALID_COMMUNITY)
+    with pytest.raises(ConfigError, match="secret_key"):
+        validate_config(config)
+
+
+def test_validate_rejects_credentials_ref_missing_secret_name():
+    """Symmetric: secret_name also required."""
+    bad = {
+        **VALID_INDEX,
+        "instances": [{
+            "id": "broken",
+            "platform": "github",
+            "access_path": "api",
+            "scope": "community/terasology",
+            "polling": {"interval_seconds": 100},
+            "platform_config": {"repos": ["a/b"]},
+            "target_room": "social-watch",
+            "credentials_ref": {"secret_key": "GITHUB_TOKEN"},
+        }],
+    }
+    config = KnarrConfig.from_dict(bad, community_loader=lambda _: VALID_COMMUNITY)
+    with pytest.raises(ConfigError, match="secret_name"):
+        validate_config(config)
+
+
+def test_validate_rejects_non_string_secret_key():
+    """Non-string secret_key would crash os.environ.get at runtime; catch it earlier."""
+    bad = {
+        **VALID_INDEX,
+        "instances": [{
+            "id": "broken",
+            "platform": "github",
+            "access_path": "api",
+            "scope": "community/terasology",
+            "polling": {"interval_seconds": 100},
+            "platform_config": {"repos": ["a/b"]},
+            "target_room": "social-watch",
+            "credentials_ref": {
+                "secret_name": "knarr-cred-x",
+                "secret_key": 42,
+            },
+        }],
+    }
+    config = KnarrConfig.from_dict(bad, community_loader=lambda _: VALID_COMMUNITY)
+    with pytest.raises(ConfigError, match="secret_key.*must be a string"):
+        validate_config(config)

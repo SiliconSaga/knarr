@@ -37,6 +37,15 @@ def _require_str_list(value: object, field_name: str) -> list[str]:
     return value
 
 
+def _require_str(value: object, field_name: str) -> str:
+    """Coerce value to str or raise ConfigError with field context."""
+    if not isinstance(value, str):
+        raise ConfigError(
+            f"{field_name} must be a string, got {type(value).__name__}"
+        )
+    return value
+
+
 @dataclass
 class RoomConfig:
     alias: str
@@ -122,12 +131,64 @@ class CommunityConfig:
         )
 
 
+_VALID_SCOPE_PREFIXES = ("community/", "user/", "group/")
+
+
+@dataclass
+class InstanceConfig:
+    """A single WatcherInstance: one (platform, access_path, scope) row.
+
+    Each instance is independently configured and runs against one source
+    on behalf of one identity scope. See
+    docs/plans/2026-05-30-knarr-source-identity-design.md for the model.
+    """
+    id: str
+    platform: str
+    access_path: str
+    scope: str
+    polling: dict
+    platform_config: dict
+    target_room: str            # config-key of the Matrix room to route alerts to.
+                                # Stored in Phase 1 but NOT consumed by the router
+                                # yet (Phase 1 router still posts to MATRIX_ROOM_ID,
+                                # preserving today's behaviour). Phase 2 reads it.
+    credentials_ref: dict | None = None  # {"secret_name": str, "secret_key": str}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> InstanceConfig:
+        required = ("id", "platform", "access_path", "scope",
+                    "polling", "platform_config", "target_room")
+        for key in required:
+            if key not in data:
+                raise ConfigError(f"instance is missing required field: {key}")
+        iid = data["id"]
+        return cls(
+            id=_require_str(iid, "instance.id"),
+            platform=_require_str(data["platform"], f"instance.{iid}.platform"),
+            access_path=_require_str(data["access_path"],
+                                     f"instance.{iid}.access_path"),
+            scope=_require_str(data["scope"], f"instance.{iid}.scope"),
+            polling=_require_mapping(data["polling"], f"instance.{iid}.polling"),
+            platform_config=_require_mapping(
+                data["platform_config"], f"instance.{iid}.platform_config"),
+            target_room=_require_str(data["target_room"],
+                                     f"instance.{iid}.target_room"),
+            credentials_ref=(
+                _require_mapping(
+                    data["credentials_ref"],
+                    f"instance.{iid}.credentials_ref")
+                if data.get("credentials_ref") is not None else None
+            ),
+        )
+
+
 @dataclass
 class KnarrConfig:
     server_name: str
     secrets: dict[str, str] = field(default_factory=dict)
     users: dict[str, str] = field(default_factory=dict)
     communities: list[CommunityConfig] = field(default_factory=list)
+    instances: list[InstanceConfig] = field(default_factory=list)
 
     @classmethod
     def from_dict(
@@ -144,11 +205,20 @@ class KnarrConfig:
             community_data = community_loader(path)
             communities.append(CommunityConfig.from_dict(community_data))
 
+        instances_raw = data.get("instances") or []
+        if not isinstance(instances_raw, list):
+            raise ConfigError(
+                f"instances must be a list, got {type(instances_raw).__name__}"
+            )
+        instances = [InstanceConfig.from_dict(_require_mapping(i, "instance"))
+                     for i in instances_raw]
+
         return cls(
             server_name=data["server_name"],
             secrets=_require_mapping(data.get("secrets"), "secrets"),
             users=_require_mapping(data.get("users"), "users"),
             communities=communities,
+            instances=instances,
         )
 
 
@@ -272,6 +342,36 @@ def validate_config(config: KnarrConfig) -> None:
     for ref in sorted(all_user_refs):
         if ref not in known:
             errors.append(f"Unknown user reference: {ref} (known: {sorted(known)})")
+
+    for inst in config.instances:
+        if not any(inst.scope.startswith(p) for p in _VALID_SCOPE_PREFIXES):
+            errors.append(
+                f"Instance '{inst.id}': scope '{inst.scope}' must start with "
+                f"one of {_VALID_SCOPE_PREFIXES}"
+            )
+        if inst.credentials_ref is not None:
+            secret_name = inst.credentials_ref.get("secret_name")
+            if not secret_name:
+                errors.append(
+                    f"Instance '{inst.id}': credentials_ref.secret_name "
+                    f"is required when credentials_ref is set"
+                )
+            elif not isinstance(secret_name, str):
+                errors.append(
+                    f"Instance '{inst.id}': credentials_ref.secret_name "
+                    f"must be a string, got {type(secret_name).__name__}"
+                )
+            secret_key = inst.credentials_ref.get("secret_key")
+            if not secret_key:
+                errors.append(
+                    f"Instance '{inst.id}': credentials_ref.secret_key "
+                    f"is required when credentials_ref is set"
+                )
+            elif not isinstance(secret_key, str):
+                errors.append(
+                    f"Instance '{inst.id}': credentials_ref.secret_key "
+                    f"must be a string, got {type(secret_key).__name__}"
+                )
 
     if errors:
         raise ConfigError("\n  - " + "\n  - ".join(errors))
