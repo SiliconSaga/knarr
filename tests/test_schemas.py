@@ -35,7 +35,7 @@ def test_watch_alert_serializes_to_dict():
     assert data["scope"] == "community/terasology"
     assert data["access_path"] == "api"
     assert data["platform"] == "reddit"
-    assert data["raw_post_ref"].startswith("https://")
+    assert data["raw_post_ref"] == "https://reddit.com/r/Terasology/comments/abc123/foo"
     assert data["content"]["type"] == "post"
     assert data["content"]["title"] == "A new release"
     assert data["content"]["body"] == "Body text here"
@@ -75,6 +75,10 @@ def test_attachment_serializes():
     data = alert.to_kafka_dict()
     assert data["content"]["attachments"][0]["url"].endswith("asset.zip")
     assert data["content"]["attachments"][0]["mime_hint"] == "application/zip"
+    rebuilt = WatchAlert.from_kafka_dict(data)
+    assert rebuilt == alert
+    assert rebuilt.content.attachments[0].url.endswith("asset.zip")
+    assert rebuilt.content.attachments[0].mime_hint == "application/zip"
 
 
 def test_extracted_at_defaults_to_now():

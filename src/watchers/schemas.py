@@ -36,7 +36,7 @@ class WatchAlert:
     instance_id: str                 # which WatcherInstance produced this
     scope: str                       # identity scope ("community/terasology", "user/cervator", etc.)
     access_path: str                 # how it was sourced ("api", "scrape", ...)
-    platform: str
+    platform: str                    # "reddit" | "github" | "discord" | ...
     raw_post_ref: str                # canonical URL on the source platform
     content: Content
     timestamp: str                   # when the event was created upstream (ISO 8601)
@@ -49,6 +49,15 @@ class WatchAlert:
 
     @classmethod
     def from_kafka_dict(cls, data: dict) -> "WatchAlert":
+        """Reconstruct a WatchAlert from a Kafka message dict.
+
+        Strict by design: assumes the current envelope shape and raises
+        KeyError on a missing field. We deliberately do NOT fabricate
+        defaults for absent fields — that would mask a corrupt or
+        legacy (pre-WatcherInstance `Source` envelope) message. The
+        router's consumer (src/router/kafka_consumer.py, Task 8) wraps
+        this in try/except and skips messages that fail to decode.
+        """
         content_raw = data["content"]
         content = Content(
             type=content_raw["type"],
