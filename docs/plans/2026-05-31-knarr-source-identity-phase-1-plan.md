@@ -35,13 +35,7 @@
 - `tests/test_adapters_reddit.py` — Reddit adapter tests (replaces today's reddit watcher tests)
 - `tests/test_adapters_github.py` — GitHub adapter tests (replaces today's github watcher tests)
 
-**No shared adapter base class.** Each platform's cursor shape is
-different (Reddit fullname, GitHub notification id, future platforms'
-timestamp / opaque-token / etc.); a base class would either be empty
-or push platform-specifics down the type system. The shared
-abstraction is the `Adapter` Protocol alone; `WatcherInstance` owns
-the cursor's *lifecycle* (persist between polls), while each adapter
-owns the cursor's *meaning*.
+**No shared adapter base class.** Each platform's cursor shape is different (Reddit fullname, GitHub notification id, future platforms' timestamp / opaque-token / etc.); a base class would either be empty or push platform-specifics down the type system. The shared abstraction is the `Adapter` Protocol alone; `WatcherInstance` owns the cursor's *lifecycle* (persist between polls), while each adapter owns the cursor's *meaning*.
 
 **Modify:**
 - `src/watchers/schemas.py` — new envelope shape (clean break, no compat shim)
@@ -292,9 +286,7 @@ class InstanceConfig:
         )
 ```
 
-This relies on a small new `_require_str` helper at the top of
-`config_schema.py` alongside `_require_mapping` and
-`_require_str_list`. If it doesn't already exist there, add:
+This relies on a small new `_require_str` helper at the top of `config_schema.py` alongside `_require_mapping` and `_require_str_list`. If it doesn't already exist there, add:
 
 ```python
 def _require_str(value: object, field_name: str) -> str:
@@ -350,9 +342,7 @@ class KnarrConfig:
         )
 ```
 
-Add the scope-prefix check + credentials_ref shape check inside
-`validate_config`, immediately after the existing duplicate-key checks
-(right before `if errors:`):
+Add the scope-prefix check + credentials_ref shape check inside `validate_config`, immediately after the existing duplicate-key checks (right before `if errors:`):
 
 ```python
     # NEW: validate instance scope prefixes + credentials_ref shape
