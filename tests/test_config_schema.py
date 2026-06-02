@@ -412,8 +412,10 @@ def test_parse_instances_block():
     assert parsed.instances[0].polling["interval_seconds"] == 21600
     assert parsed.instances[0].platform_config["subreddit"] == "Terasology"
     assert parsed.instances[0].target_room == "social-watch"
-    assert parsed.instances[1].credentials_ref["secret_name"] == \
-        "knarr-cred-community-terasology-gh-pat"
+    assert (
+        parsed.instances[1].credentials_ref["secret_name"]
+        == "knarr-cred-community-terasology-gh-pat"
+    )
 
 
 def test_parse_instances_defaults_to_empty():
@@ -519,4 +521,34 @@ def test_validate_rejects_non_string_secret_key():
     }
     config = KnarrConfig.from_dict(bad, community_loader=lambda _: VALID_COMMUNITY)
     with pytest.raises(ConfigError, match="secret_key.*must be a string"):
+        validate_config(config)
+
+
+def test_parse_rejects_non_list_instances():
+    """A non-list (truthy) instances value is rejected with a clear message."""
+    bad = {**VALID_INDEX, "instances": "oops-not-a-list"}
+    with pytest.raises(ConfigError, match="instances must be a list"):
+        KnarrConfig.from_dict(bad, community_loader=lambda _: VALID_COMMUNITY)
+
+
+def test_validate_rejects_non_string_secret_name():
+    """Symmetric with the secret_key case: non-string secret_name is caught."""
+    bad = {
+        **VALID_INDEX,
+        "instances": [{
+            "id": "broken",
+            "platform": "github",
+            "access_path": "api",
+            "scope": "community/terasology",
+            "polling": {"interval_seconds": 100},
+            "platform_config": {"repos": ["a/b"]},
+            "target_room": "social-watch",
+            "credentials_ref": {
+                "secret_name": 42,
+                "secret_key": "GITHUB_TOKEN",
+            },
+        }],
+    }
+    config = KnarrConfig.from_dict(bad, community_loader=lambda _: VALID_COMMUNITY)
+    with pytest.raises(ConfigError, match="secret_name.*must be a string"):
         validate_config(config)

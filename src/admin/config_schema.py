@@ -205,8 +205,10 @@ class KnarrConfig:
             community_data = community_loader(path)
             communities.append(CommunityConfig.from_dict(community_data))
 
-        instances_raw = data.get("instances") or []
-        if not isinstance(instances_raw, list):
+        instances_raw = data.get("instances")
+        if instances_raw is None:
+            instances_raw = []
+        elif not isinstance(instances_raw, list):
             raise ConfigError(
                 f"instances must be a list, got {type(instances_raw).__name__}"
             )
@@ -351,7 +353,7 @@ def validate_config(config: KnarrConfig) -> None:
             )
         if inst.credentials_ref is not None:
             secret_name = inst.credentials_ref.get("secret_name")
-            if not secret_name:
+            if secret_name is None or secret_name == "":
                 errors.append(
                     f"Instance '{inst.id}': credentials_ref.secret_name "
                     f"is required when credentials_ref is set"
@@ -362,7 +364,7 @@ def validate_config(config: KnarrConfig) -> None:
                     f"must be a string, got {type(secret_name).__name__}"
                 )
             secret_key = inst.credentials_ref.get("secret_key")
-            if not secret_key:
+            if secret_key is None or secret_key == "":
                 errors.append(
                     f"Instance '{inst.id}': credentials_ref.secret_key "
                     f"is required when credentials_ref is set"
