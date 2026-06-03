@@ -87,7 +87,7 @@ async def main():
                     "formatted_body": formatted.replace("\n", "<br>"),
                 },
             )
-            logger.info("Posted alert from %s/%s", alert.source.platform, alert.source.channel)
+            logger.info("Posted alert from %s/%s", alert.platform, alert.instance_id)
     finally:
         consumer.close()
         await client.close()
