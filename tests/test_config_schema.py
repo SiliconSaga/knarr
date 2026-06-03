@@ -552,3 +552,22 @@ def test_validate_rejects_non_string_secret_name():
     config = KnarrConfig.from_dict(bad, community_loader=lambda _: VALID_COMMUNITY)
     with pytest.raises(ConfigError, match="secret_name.*must be a string"):
         validate_config(config)
+
+
+def test_loads_real_test_config_with_instances(tmp_path):
+    """Walking the actual config/knarr.yaml from this repo parses cleanly
+    and produces 2 instances."""
+    import pathlib
+    repo_root = pathlib.Path(__file__).resolve().parents[1]
+    config_path = repo_root / "config" / "knarr.yaml"
+    if not config_path.exists():
+        import pytest
+        pytest.skip(f"{config_path} not present in this checkout")
+    parsed = load_config(str(config_path))
+    assert len(parsed.instances) == 2
+    assert {i.id for i in parsed.instances} == {
+        "reddit-terasology", "github-terasology",
+    }
+    gh = next(i for i in parsed.instances if i.id == "github-terasology")
+    assert gh.credentials_ref["secret_key"] == "GITHUB_TOKEN"
+    validate_config(parsed)  # must pass validation too

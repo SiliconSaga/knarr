@@ -12,3 +12,29 @@ users:
 
 communities:
   - config/test.yaml
+
+instances:
+  - id: reddit-terasology
+    platform: reddit
+    access_path: api
+    scope: community/terasology
+    polling:
+      interval_seconds: 21600
+    platform_config:
+      subreddit: Terasology
+    target_room: social-watch
+    # no credentials_ref — Reddit /new.json is anonymous
+
+  - id: github-terasology
+    platform: github
+    access_path: api
+    scope: community/terasology
+    polling:
+      interval_seconds: 21600
+    platform_config:
+      repos:
+        - MovingBlocks/Terasology
+    target_room: social-watch
+    credentials_ref:
+      secret_name: knarr-cred-community-terasology-gh-pat
+      secret_key: GITHUB_TOKEN
