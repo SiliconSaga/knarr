@@ -18,7 +18,7 @@ import os
 import signal
 
 from confluent_kafka import Consumer, KafkaError
-from nio import AsyncClient, LoginResponse
+from nio import AsyncClient, JoinResponse, LoginResponse, RoomSendResponse
 
 from .kafka_consumer import deserialize_alert, format_alert_message
 
@@ -41,6 +41,22 @@ async def main():
         logger.error("Matrix login failed: %s", response)
         return
     logger.info("Logged into Matrix as %s", user)
+
+    # Join the target room before consuming anything.
+    #
+    # The reconciler INVITES the router; it does not accept on its behalf, and
+    # an invited-but-not-joined bot cannot send. Joining here makes the router
+    # self-sufficient after a rebuild instead of needing someone to accept the
+    # invite by hand. Idempotent — joining a room you are already in succeeds.
+    join = await client.join(room_id)
+    if not isinstance(join, JoinResponse):
+        logger.error(
+            "Could not join %s: %s. Every send would be rejected, so refusing "
+            "to start rather than logging phantom successes.", room_id, join,
+        )
+        await client.close()
+        return
+    logger.info("Joined %s", room_id)
 
     # Set up Kafka consumer
     consumer = Consumer({
@@ -77,7 +93,7 @@ async def main():
                 continue
 
             formatted = format_alert_message(alert)
-            await client.room_send(
+            send = await client.room_send(
                 room_id,
                 message_type="m.room.message",
                 content={
@@ -87,7 +103,22 @@ async def main():
                     "formatted_body": formatted.replace("\n", "<br>"),
                 },
             )
-            logger.info("Posted alert from %s/%s", alert.platform, alert.instance_id)
+            # nio RETURNS errors rather than raising them, so an unchecked
+            # room_send logs a success that never happened. This bit us for
+            # real: the router reported "Posted alert" for every message while
+            # Synapse rejected all of them, because the bot had been invited to
+            # the room but never joined. A router that lies about delivery is
+            # worse than one that crashes.
+            if not isinstance(send, RoomSendResponse):
+                logger.error(
+                    "Matrix REJECTED alert %s from %s/%s: %s",
+                    alert.event_id, alert.platform, alert.instance_id, send,
+                )
+                continue
+            logger.info(
+                "Posted alert from %s/%s (event %s)",
+                alert.platform, alert.instance_id, send.event_id,
+            )
     finally:
         consumer.close()
         await client.close()
