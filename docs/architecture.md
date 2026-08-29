@@ -168,11 +168,13 @@ python3 -m pytest tests/ -v
 Publish a test alert to Kafka and verify it appears in the Matrix room:
 
 ```bash
-echo '{"event_id":"test","timestamp":"2026-04-06T00:00:00Z","source":{"platform":"test","channel":"manual","community":"terasology"},"content":{"type":"test","body":"Testing the pipeline","url":null}}' | \
+echo '{"event_id":"manual-001","instance_id":"reddit-terasology","scope":"community/terasology","access_path":"api","platform":"reddit","raw_post_ref":"https://example.invalid/post","content":{"type":"post","title":"Manual test","body":"Testing the pipeline","author":"tester","attachments":[]},"timestamp":"2026-08-29T12:00:00+00:00","extracted_at":"2026-08-29T12:00:00+00:00"}' | \
   kcat -b localhost:9092 -t knarr.watch.alerts -P
 ```
 
-Then check `#social-watch` in Element or the router logs.
+Then check `#social-watch` in Element or the router logs. This is the **post-Phase 1 envelope**: the old nested `source: {platform, channel, community}` block was replaced by flat `instance_id` / `scope` / `access_path` / `platform` fields plus `raw_post_ref`. `from_kafka_dict` is deliberately strict and raises on a missing field rather than defaulting, so a message in the old shape is skipped by the consumer instead of arriving half-populated — if nothing appears, check the router logs for a decode error before suspecting Matrix.
+
+The router logs the Matrix event id it received back (`Posted alert from reddit/reddit-terasology (event $...)`). A line without one means the send was rejected, not delivered.
 
 ### Inspect everything via Kafka UI
 
