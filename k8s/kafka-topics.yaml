@@ -1,10 +1,19 @@
+# The strimzi.io/cluster label must name the Kafka cluster EXACTLY. Strimzi
+# silently ignores a KafkaTopic whose label names a cluster that does not
+# exist — no event, no error, just no topic. These six carried the old
+# composite name (`knarr-kafka-8r9tn`) and were therefore inert from the June
+# k3d rebuild until 2026-08-28, which is why the topics did not exist.
+#
+# Safe to hardcode now: mimir#18 made the composition name Strimzi resources
+# after the CLAIM, so `knarr-kafka` is stable across rebuilds. The claim is in
+# k8s/kafka-claim.yaml; its status.bootstrapServers publishes the address.
 apiVersion: kafka.strimzi.io/v1
 kind: KafkaTopic
 metadata:
   name: knarr.messages.inbound
   namespace: kafka
   labels:
-    strimzi.io/cluster: knarr-kafka-8r9tn
+    strimzi.io/cluster: knarr-kafka
 spec:
   partitions: 1
   replicas: 1
@@ -17,7 +26,7 @@ metadata:
   name: knarr.messages.outbound
   namespace: kafka
   labels:
-    strimzi.io/cluster: knarr-kafka-8r9tn
+    strimzi.io/cluster: knarr-kafka
 spec:
   partitions: 1
   replicas: 1
@@ -30,7 +39,7 @@ metadata:
   name: knarr.watch.alerts
   namespace: kafka
   labels:
-    strimzi.io/cluster: knarr-kafka-8r9tn
+    strimzi.io/cluster: knarr-kafka
 spec:
   partitions: 1
   replicas: 1
@@ -43,7 +52,7 @@ metadata:
   name: knarr.routing.pending
   namespace: kafka
   labels:
-    strimzi.io/cluster: knarr-kafka-8r9tn
+    strimzi.io/cluster: knarr-kafka
 spec:
   partitions: 1
   replicas: 1
@@ -56,7 +65,7 @@ metadata:
   name: knarr.routing.decisions
   namespace: kafka
   labels:
-    strimzi.io/cluster: knarr-kafka-8r9tn
+    strimzi.io/cluster: knarr-kafka
 spec:
   partitions: 1
   replicas: 1
@@ -69,7 +78,7 @@ metadata:
   name: knarr.content.draft
   namespace: kafka
   labels:
-    strimzi.io/cluster: knarr-kafka-8r9tn
+    strimzi.io/cluster: knarr-kafka
 spec:
   partitions: 1
   replicas: 1

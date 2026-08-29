@@ -4,7 +4,15 @@ metadata:
   name: synapse-config
   namespace: knarr
 data:
-  homeserver.yaml: |
+  # A TEMPLATE, not the final config. The Deployment's initContainer renders
+  # this into an emptyDir at boot, substituting the __DB_*__ placeholders from
+  # the DataService-published Secret (`synapse-dataservice`).
+  #
+  # Why: this file previously carried a live database password, in git, in a
+  # public repo. It also hardcoded a per-app Percona cluster hostname that only
+  # existed until the next teardown. Both problems disappear by reading the
+  # Secret the operator already publishes.
+  homeserver.yaml.tmpl: |
     server_name: "knarr.local"
     pid_file: "/data/homeserver.pid"
     listeners:
@@ -17,13 +25,18 @@ data:
             compress: false
     database:
       name: psycopg2
+      # The shared cluster's databases inherit en_US.utf-8 from template1 and
+      # Synapse wants C. Same workaround the dedicated cluster needed.
       allow_unsafe_locale: true
       args:
-        user: "synapse"
-        password: "HcL.}NIx,{8JS5jVk:jX=||:"
-        database: "synapse"
-        host: "synapse-db-primary.knarr.svc"
-        port: "5432"
+        user: "__DB_USER__"
+        password: "__DB_PASSWORD__"
+        database: "__DB_NAME__"
+        host: "__DB_HOST__"
+        port: "__DB_PORT__"
+        # The shared cluster serves hostssl only; sslmode=disable is rejected
+        # outright rather than quietly downgraded.
+        sslmode: "require"
         cp_min: 2
         cp_max: 5
     signing_key_path: "/keys/signing.key"

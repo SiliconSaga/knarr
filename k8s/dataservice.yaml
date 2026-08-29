@@ -1,0 +1,25 @@
+# Synapse's database, vended out of Mimir's shared PostgreSQL cluster.
+#
+# Replaces the PostgreSQLInstance claim this file used to hold, which
+# provisioned a whole Percona cluster (~4 pods) in the knarr namespace for one
+# database. See mimir's docs/plans/2026-08-17-dataservice-vending-design.md.
+#
+# The operator publishes credentials to a Secret named in status.secretName —
+# `synapse-dataservice`, carrying host / port / database / username / password
+# and a ready-assembled uri. Nothing here or in the Synapse manifests should
+# hardcode any of them; the Deployment's initContainer reads that Secret.
+#
+# NOTE ON COLLATION: databases on the shared cluster inherit en_US.utf-8 from
+# template1, and Synapse wants C. That is why homeserver.yaml still sets
+# `allow_unsafe_locale: true` — the same workaround the dedicated cluster
+# needed, so shared placement costs nothing here. A future consumer that
+# cannot set an equivalent flag would need placement: dedicated instead.
+apiVersion: mimir.siliconsaga.org/v1alpha1
+kind: DataService
+metadata:
+  name: synapse
+  namespace: knarr
+spec:
+  engine: postgres
+  placement: shared
+  databaseName: synapse

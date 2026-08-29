@@ -46,12 +46,9 @@ For scripting or quick terminal checks, `kcat` talks directly to Kafka via port-
 ```bash
 brew install kcat
 
-# Discover the Kafka cluster name — Crossplane gives it a random suffix
-# (e.g. knarr-kafka-8r9tn). See troubleshooting.md for context.
-KAFKA_CLUSTER=$(kubectl get kafka -n kafka -o jsonpath='{.items[0].metadata.name}')
-
-# Port-forward Kafka (background, keep open while using kcat)
-kubectl port-forward -n kafka svc/${KAFKA_CLUSTER}-kafka-bootstrap 9092:9092 &
+# The cluster is named after the claim, so this is stable — no lookup needed.
+# (Before mimir#18 it carried a random Crossplane suffix; see troubleshooting.md.)
+kubectl port-forward -n kafka svc/knarr-kafka-kafka-bootstrap 9092:9092 &
 
 # List topics
 kcat -b localhost:9092 -L

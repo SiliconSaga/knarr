@@ -26,20 +26,25 @@ otherwise unaffected and still produces Reddit alerts.
 **Fix:** create a fine-grained PAT, add it to `knarr.env` as
 `GITHUB_TOKEN`, restart the watcher Deployment.
 
-## Kafka cluster name mismatch
+## Kafka topics never become Ready (or silently do not exist)
 
-**Symptom:** `kafka-topics.yaml` apply fails with a "no such cluster"
-error from Strimzi, or topics never reach `Ready=True`.
+**Symptom:** topics never reach `Ready=True` — or, worse, `kubectl get kafkatopic -n kafka` shows nothing at all and the apply reported success.
 
-**Cause:** the Crossplane `xkafkacluster-strimzi` composition generates
-a random suffix on the cluster name (e.g. `knarr-kafka-8r9tn`). The
-`strimzi.io/cluster` label in `kafka-topics.yaml` has to match the
-actual cluster name.
+**The trap:** Strimzi **silently ignores** a `KafkaTopic` whose `strimzi.io/cluster` label names a cluster that does not exist. No event, no error, no condition — the topic object simply sits there doing nothing. A stale label therefore looks exactly like "not created yet", forever.
 
-**Fix:** look up the actual name and update the label:
+**Historical cause (fixed 2026-08-28, mimir#18):** the `xkafkacluster-strimzi` composition used to name the cluster after the Crossplane *composite*, which carries a random suffix (`knarr-kafka-8r9tn`, then `knarr-kafka-2wjjq` after a rebuild). Every committed reference went stale on each teardown. Knarr's six topics were inert for two months for exactly this reason.
+
+The composition now names Strimzi resources after the **claim**, so the cluster is deterministically `knarr-kafka` and the committed labels stay correct across rebuilds.
+
+**If you still see a mismatch,** compare the label against the live cluster:
 
 ```bash
-kubectl get kafka -n kafka   # note the NAME
-# then edit k8s/kafka-topics.yaml's strimzi.io/cluster label to match
-kubectl apply -f k8s/kafka-topics.yaml
+kubectl get kafka -n kafka
+kubectl get kafkatopic -n kafka
+```
+
+The authoritative bootstrap address is published on the claim — read it rather than assembling one:
+
+```bash
+kubectl get kafkacluster knarr-kafka -n knarr -o jsonpath='{.status.bootstrapServers}'
 ```
