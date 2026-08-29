@@ -1,3 +1,98 @@
+# Watcher pod — config-driven since the Phase 1 WatcherInstance refactor.
+#
+# Filename kept as reddit-github.yaml deliberately: renaming it would mean
+# updating every reference in the apply scripts, operations.md's rebuild
+# section, the BDD setup and the rollout instructions — disproportionate churn
+# for Phase 1. Phase 2+ may rename to watchers.yaml once more instances land.
+#
+# ⚠ The knarr.yaml below is a HAND-MAINTAINED COPY of the in-tree
+# config/knarr.yaml + config/test.yaml. Keep them in step. Generating this
+# ConfigMap from the source config (or having the reconciler own it) is the
+# Phase 0 follow-up tracked on the source-identity arc — until then, a change
+# to config/ that is not mirrored here is a silent drift between what the CLI
+# validates and what the pod actually runs.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: knarr-watcher-config
+  namespace: knarr
+data:
+  knarr.yaml: |
+    server_name: knarr.local
+
+    secrets:
+      discord_token: DISCORD_TOKEN
+      github_token: GITHUB_TOKEN
+
+    users:
+      admin: "@admin:knarr.local"
+      knarr: "@knarr:knarr.local"
+      router: "@knarr-router:knarr.local"
+      bridge_bot: "@discordbot:knarr.local"
+
+    # Path is relative to knarr.yaml's directory inside the pod (/etc/knarr/).
+    # Both files are flat keys of the same ConfigMap, so this is the bare
+    # filename — NOT `config/test.yaml`. The in-tree config/knarr.yaml uses the
+    # `config/` prefix because the on-disk layout differs from the mount layout.
+    communities:
+      - test.yaml
+
+    instances:
+      - id: reddit-terasology
+        platform: reddit
+        access_path: api
+        scope: community/terasology
+        polling:
+          interval_seconds: 21600
+        platform_config:
+          subreddit: Terasology
+        target_room: social-watch
+        # no credentials_ref — Reddit /new.json is anonymous
+
+      - id: github-terasology
+        platform: github
+        access_path: api
+        scope: community/terasology
+        polling:
+          interval_seconds: 21600
+        platform_config:
+          repos:
+            - MovingBlocks/Terasology
+        target_room: social-watch
+        credentials_ref:
+          secret_name: knarr-cred-community-terasology-gh-pat
+          secret_key: GITHUB_TOKEN
+
+  # Carried alongside under the same /etc/knarr/ mount so load_config()'s
+  # community_loader resolves `test.yaml` relative to knarr.yaml's directory.
+  test.yaml: |
+    community: knarr-test
+    display_name: "Knarr Test"
+    spaces:
+      knarr-test:
+        name: "Knarr Test"
+        visibility: private
+        members: [admin, knarr]
+        rooms:
+          social-watch:
+            alias: social-watch
+            name: "#social-watch"
+            topic: "Platform monitoring alerts"
+            members: [admin, knarr, router]
+        spaces:
+          feeds:
+            name: "Feeds"
+            visibility: private
+            rooms:
+              feed-reddit:
+                alias: feed-reddit
+                name: "#feed-reddit"
+                topic: "Reddit watcher alerts"
+              feed-github:
+                alias: feed-github
+                name: "#feed-github"
+                topic: "GitHub watcher alerts"
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -20,19 +115,37 @@ spec:
           image: knarr-watchers:dev
           imagePullPolicy: Never
           env:
+            # Stable since mimir#18 — Strimzi resources are named after the
+            # claim rather than the randomly-suffixed Crossplane composite.
             - name: KAFKA_BOOTSTRAP
               value: "knarr-kafka-kafka-bootstrap.kafka.svc:9092"
             - name: KAFKA_TOPIC
               value: "knarr.watch.alerts"
-            - name: REDDIT_SUBREDDIT
-              value: "Terasology"
-            - name: GITHUB_REPOS
-              value: "MovingBlocks/Terasology"
-            - name: POLL_INTERVAL_SECONDS
-              value: "21600"
+            - name: KNARR_CONFIG_PATH
+              value: "/etc/knarr/knarr.yaml"
+            # One env var per credentials_ref.secret_key. run.py's
+            # _resolve_credential fails fast when an instance declares a
+            # credentials_ref whose env var is unset, rather than silently
+            # degrading to anonymous calls — so this Secret must exist.
+            # For anonymous GitHub polling instead (lower rate limits, no
+            # secret to manage), drop the credentials_ref block from the
+            # github instance above AND this secretKeyRef.
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: knarr-cred-community-terasology-gh-pat
+                  key: GITHUB_TOKEN
+          volumeMounts:
+            - name: config
+              mountPath: /etc/knarr
+              readOnly: true
           resources:
             requests:
               cpu: 25m
               memory: 64Mi
             limits:
               memory: 128Mi
+      volumes:
+        - name: config
+          configMap:
+            name: knarr-watcher-config
