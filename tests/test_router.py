@@ -77,6 +77,33 @@ def test_deserialize_alert_survives_valid_json_of_the_wrong_shape():
     assert deserialize_alert(b"42") is None
 
 
+def test_deserialize_alert_rejects_wrong_typed_nested_scalars():
+    """A present-but-wrong-typed nested field must fail HERE, not in formatting.
+
+    `content.title` as a list used to pass deserialization untouched and then
+    raise TypeError inside `"\\n".join(...)` — outside the consumer's guard,
+    so one bad record killed the loop rather than being skipped.
+    """
+    import json
+    payload = _reddit_alert().to_kafka_dict()
+    payload["content"]["title"] = ["unexpected"]
+    assert deserialize_alert(json.dumps(payload).encode()) is None
+
+
+def test_deserialize_alert_rejects_wrong_typed_top_level_scalars():
+    import json
+    payload = _reddit_alert().to_kafka_dict()
+    payload["platform"] = {"not": "a string"}
+    assert deserialize_alert(json.dumps(payload).encode()) is None
+
+
+def test_deserialize_alert_rejects_non_object_content():
+    import json
+    payload = _reddit_alert().to_kafka_dict()
+    payload["content"] = "just a string"
+    assert deserialize_alert(json.dumps(payload).encode()) is None
+
+
 def test_html_body_escapes_untrusted_content():
     """Alert bodies come from Reddit and GitHub — they are not trusted markup.
 

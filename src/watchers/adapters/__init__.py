@@ -36,5 +36,26 @@ class Adapter(Protocol):
         Returns:
             (alerts, new_cursor) — alerts may be empty; new_cursor may equal
             since_cursor if nothing new arrived.
+
+        Any internal dedup state the adapter builds while fetching must be
+        held PENDING until `commit()` — see below.
+        """
+        ...
+
+    def commit(self) -> None:
+        """Promote the last fetch's pending dedup state to committed.
+
+        Called by WatcherInstance only after every alert from that fetch has
+        been confirmed delivered to Kafka.
+
+        This exists because an adapter that dedups internally can silently
+        defeat the instance's cursor safety. GitHubApiAdapter suppresses rows
+        it has already emitted; if it recorded them during `fetch`, then a
+        delivery failure — which correctly holds the instance's cursor — would
+        be followed by a re-fetch in which those same rows are suppressed as
+        "already seen". The cursor would be right and the alerts would be gone
+        anyway. Splitting fetch from commit keeps the two in step.
+
+        Adapters with no internal dedup state implement this as a no-op.
         """
         ...

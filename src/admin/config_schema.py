@@ -133,6 +133,16 @@ class CommunityConfig:
 
 _VALID_SCOPE_PREFIXES = ("community/", "user/", "group/")
 
+# (platform, access_path) pairs that src/watchers/run.py can build an adapter
+# for. Kept here rather than imported from the watcher so validation stays a
+# pure-config concern with no runtime dependency — the cost is that adding an
+# adapter means adding it in both places, which the dispatch table's final
+# `raise` will catch loudly if forgotten.
+_SUPPORTED_ADAPTERS = frozenset({
+    ("reddit", "api"),
+    ("github", "api"),
+})
+
 
 @dataclass
 class InstanceConfig:
@@ -370,6 +380,19 @@ def validate_config(config: KnarrConfig) -> None:
             errors.append(
                 f"Instance '{inst.id}': polling.interval_seconds must be "
                 f"positive, got {interval}"
+            )
+
+        # The (platform, access_path) pair must have an adapter. Without this
+        # a combination like github/scrape parsed cleanly, validated cleanly,
+        # and only failed when build_adapter reached its final `raise` — after
+        # the config had already been accepted as good.
+        if (inst.platform, inst.access_path) not in _SUPPORTED_ADAPTERS:
+            supported = ", ".join(
+                f"{p}/{a}" for p, a in sorted(_SUPPORTED_ADAPTERS)
+            )
+            errors.append(
+                f"Instance '{inst.id}': no adapter for "
+                f"{inst.platform}/{inst.access_path} (supported: {supported})"
             )
 
         # Per-platform required config. These were read straight out of

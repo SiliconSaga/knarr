@@ -58,24 +58,50 @@ class WatchAlert:
         router's consumer (src/router/kafka_consumer.py, Task 8) wraps
         this in try/except and skips messages that fail to decode.
         """
+        def _str(mapping: dict, key: str, where: str) -> str:
+            """Require a string. Type-checking the NESTED scalars matters.
+
+            A missing key already raises KeyError, which the router catches.
+            A key present with the wrong type did not: `content.title` as a
+            list sailed through here and then blew up in `"\\n".join(...)`
+            during formatting — outside the deserialize guard, so it killed
+            the consumer loop instead of skipping one record.
+            """
+            value = mapping[key]
+            if not isinstance(value, str):
+                raise TypeError(
+                    f"{where}.{key} must be a string, "
+                    f"got {type(value).__name__}"
+                )
+            return value
+
         content_raw = data["content"]
+        if not isinstance(content_raw, dict):
+            raise TypeError(
+                f"content must be an object, got {type(content_raw).__name__}"
+            )
+        attachments_raw = content_raw.get("attachments", [])
+        if not isinstance(attachments_raw, list):
+            raise TypeError(
+                f"content.attachments must be a list, "
+                f"got {type(attachments_raw).__name__}"
+            )
+
         content = Content(
-            type=content_raw["type"],
-            title=content_raw["title"],
-            body=content_raw["body"],
-            author=content_raw["author"],
-            attachments=[
-                Attachment(**a) for a in content_raw.get("attachments", [])
-            ],
+            type=_str(content_raw, "type", "content"),
+            title=_str(content_raw, "title", "content"),
+            body=_str(content_raw, "body", "content"),
+            author=_str(content_raw, "author", "content"),
+            attachments=[Attachment(**a) for a in attachments_raw],
         )
         return cls(
-            event_id=data["event_id"],
-            instance_id=data["instance_id"],
-            scope=data["scope"],
-            access_path=data["access_path"],
-            platform=data["platform"],
-            raw_post_ref=data["raw_post_ref"],
+            event_id=_str(data, "event_id", "alert"),
+            instance_id=_str(data, "instance_id", "alert"),
+            scope=_str(data, "scope", "alert"),
+            access_path=_str(data, "access_path", "alert"),
+            platform=_str(data, "platform", "alert"),
+            raw_post_ref=_str(data, "raw_post_ref", "alert"),
             content=content,
-            timestamp=data["timestamp"],
-            extracted_at=data["extracted_at"],
+            timestamp=_str(data, "timestamp", "alert"),
+            extracted_at=_str(data, "extracted_at", "alert"),
         )

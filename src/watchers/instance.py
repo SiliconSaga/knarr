@@ -67,9 +67,12 @@ class WatcherInstance:
         """
         alerts, new_cursor = await self.adapter.fetch(self._cursor)
         if not alerts:
-            # Nothing to deliver, so nothing to lose. Still take the cursor:
-            # an empty fetch legitimately moves the tip forward.
+            # Nothing to deliver, so nothing to lose. Still take the cursor
+            # AND commit the adapter's dedup state: an empty fetch legitimately
+            # moves the tip forward, and leaving the adapter's state pending
+            # would re-suppress nothing while quietly diverging from the cursor.
             self._cursor = new_cursor
+            self._commit_adapter()
             return 0
 
         failures: list[str] = []
@@ -96,27 +99,15 @@ class WatcherInstance:
                 "instance=%s produce buffer full (%s); keeping cursor at %s",
                 self.config.id, exc, self._cursor,
             )
-            self.producer.flush()
+            # Same off-thread, bounded flush as the normal path — a blocking
+            # call here would stall every other instance's poll for exactly
+            # the reason the happy path avoids it.
+            await self._flush()
             return 0
 
-        # flush() is a blocking librdkafka call. Awaiting it on a worker
-        # thread matters because every instance shares one event loop: a
-        # broker that has gone slow would otherwise stall every OTHER
-        # instance's poll for the duration, turning one degraded platform
-        # into a stalled watcher. The timeout bounds that further — a flush
-        # that never returns must not park the loop forever.
-        try:
-            remaining = await asyncio.wait_for(
-                asyncio.to_thread(self.producer.flush, _FLUSH_TIMEOUT_SECONDS),
-                timeout=_FLUSH_TIMEOUT_SECONDS + 5,
-            )
-        except TimeoutError:
-            logger.error(
-                "instance=%s flush did not return within %ss; keeping cursor "
-                "at %s so the next poll retries",
-                self.config.id, _FLUSH_TIMEOUT_SECONDS + 5, self._cursor,
-            )
-            return 0
+        remaining = await self._flush()
+        if remaining is None:
+            return 0  # timed out; cursor held, next poll retries
 
         if remaining or failures:
             logger.error(
@@ -127,8 +118,41 @@ class WatcherInstance:
             return 0
 
         self._cursor = new_cursor
+        # Cursor and adapter dedup state advance together or not at all. If
+        # the adapter committed independently, a held cursor would be followed
+        # by a re-fetch that suppressed the very rows it was protecting.
+        self._commit_adapter()
         logger.info(
             "instance=%s published=%d new_cursor=%s",
             self.config.id, len(alerts), new_cursor,
         )
         return len(alerts)
+
+    async def _flush(self) -> int | None:
+        """Drain the producer off the event loop. None means it timed out.
+
+        flush() is a blocking librdkafka call. Awaiting it on a worker thread
+        matters because every instance shares one event loop: a broker that
+        has gone slow would otherwise stall every OTHER instance's poll for
+        the duration, turning one degraded platform into a stalled watcher.
+        The outer timeout bounds it further — a flush that never returns must
+        not park the loop forever.
+        """
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(self.producer.flush, _FLUSH_TIMEOUT_SECONDS),
+                timeout=_FLUSH_TIMEOUT_SECONDS + 5,
+            )
+        except TimeoutError:
+            logger.error(
+                "instance=%s flush did not return within %ss; keeping cursor "
+                "at %s so the next poll retries",
+                self.config.id, _FLUSH_TIMEOUT_SECONDS + 5, self._cursor,
+            )
+            return None
+
+    def _commit_adapter(self) -> None:
+        """Tell the adapter its last fetch is durably delivered, if it cares."""
+        commit = getattr(self.adapter, "commit", None)
+        if callable(commit):
+            commit()

@@ -505,6 +505,23 @@ def test_validate_requires_reddit_subreddit():
     )
 
 
+def test_validate_rejects_platform_access_path_without_an_adapter():
+    """A pair with no adapter used to fail only when build_adapter gave up.
+
+    Config that parses and validates cleanly, then dies at startup, is worse
+    than config that is rejected — the error arrives far from the mistake.
+    """
+    _expect_config_error(
+        _instance(platform="github", access_path="scrape",
+                  platform_config={"repos": ["a/b"]}),
+        "no adapter for github/scrape",
+    )
+    _expect_config_error(
+        _instance(platform="facebook", access_path="admin-app"),
+        "no adapter for facebook/admin-app",
+    )
+
+
 def test_validate_requires_github_repos():
     _expect_config_error(
         _instance(platform="github", platform_config={}),

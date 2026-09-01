@@ -117,6 +117,9 @@ async def test_cursor_is_sent_as_since_with_overlap_and_seen_rows_suppressed():
     with patch.object(adapter, "_http_get", new=AsyncMock(side_effect=fake_get)):
         _, cursor = await adapter.fetch(None)
         assert cursor == "2026-05-31T11:55:00Z"
+        # Delivery confirmed — this is what WatcherInstance does once Kafka
+        # has the batch. Without it the adapter deliberately re-emits.
+        adapter.commit()
 
         # Second poll: same feed replayed. Every row was already emitted, so
         # nothing should come back out even though the overlap re-reads them.
@@ -138,6 +141,7 @@ async def test_new_row_sharing_the_boundary_timestamp_is_not_dropped():
     with patch.object(adapter, "_http_get",
                       new=AsyncMock(return_value=_SAMPLE_NOTIFICATIONS)):
         _, cursor = await adapter.fetch(None)
+    adapter.commit()
 
     # A different notification with the SAME updated_at as the cursor.
     tie = {
@@ -156,6 +160,67 @@ async def test_new_row_sharing_the_boundary_timestamp_is_not_dropped():
 
     assert "1004" in {a.event_id for a in alerts}
     assert "1001" not in {a.event_id for a in alerts}
+
+
+@pytest.mark.asyncio
+async def test_uncommitted_fetch_re_emits_rather_than_suppressing():
+    """Without commit(), the adapter must NOT remember what it emitted.
+
+    This is what keeps the instance's cursor safety honest. A delivery
+    failure holds the cursor so the batch is re-fetched — but if the adapter
+    had already recorded those ids as seen, the re-fetch would suppress them
+    and the alerts would be lost with the cursor still looking correct.
+    """
+    adapter = GitHubApiAdapter(
+        instance_id="g", scope="community/x",
+        repos=["MovingBlocks/Terasology"], token=None,
+    )
+    with patch.object(adapter, "_http_get",
+                      new=AsyncMock(return_value=_SAMPLE_NOTIFICATIONS)):
+        first, cursor = await adapter.fetch(None)
+        # No commit() — simulating a delivery failure.
+        second, _ = await adapter.fetch(None)
+
+    assert {a.event_id for a in first} == {"1001", "1002"}
+    assert {a.event_id for a in second} == {"1001", "1002"}, (
+        "an uncommitted fetch must be repeatable, or a held cursor protects "
+        "nothing"
+    )
+
+
+@pytest.mark.asyncio
+async def test_page_cap_holds_the_cursor():
+    """Hitting the page cap must not advance past notifications never read.
+
+    The feed is newest-first, so the unread remainder is OLDER than
+    everything fetched. Advancing the cursor to the newest row would put it
+    permanently beyond them.
+    """
+    adapter = GitHubApiAdapter(
+        instance_id="g", scope="community/x",
+        repos=["MovingBlocks/Terasology"], token=None,
+    )
+
+    def _row(i):
+        return {
+            "id": f"n{i}",
+            "updated_at": f"2026-06-01T10:00:{i:02d}Z",
+            "repository": {"full_name": "MovingBlocks/Terasology"},
+            "subject": {
+                "type": "Issue",
+                "title": f"Issue {i}",
+                "url": f"https://api.github.com/repos/MovingBlocks/Terasology/issues/{i}",
+            },
+        }
+
+    # Every page full ⇒ never exhausted ⇒ cap reached.
+    full_page = [_row(i) for i in range(50)]
+    with patch.object(adapter, "_http_get",
+                      new=AsyncMock(return_value=full_page)):
+        alerts, cursor = await adapter.fetch("2026-06-01T09:00:00Z")
+
+    assert alerts, "alerts from the pages we DID read must still ship"
+    assert cursor == "2026-06-01T09:00:00Z", "cursor must not advance"
 
 
 @pytest.mark.asyncio

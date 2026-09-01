@@ -71,6 +71,8 @@ class GitHubApiAdapter:
         # safe without re-emitting, AND what lets a genuinely new
         # notification sharing that second still get through.
         self._seen_ids: set[str] = set()
+        # Staged by fetch(), promoted by commit(). None means nothing pending.
+        self._pending_seen_ids: set[str] | None = None
 
     async def _http_get_raw(self, url: str, headers: dict | None = None) -> list[dict]:
         """Indirection point so token-header tests can intercept."""
@@ -132,6 +134,57 @@ class GitHubApiAdapter:
 
         return to_web(api_url) if api_url else ""
 
+    @staticmethod
+    def _newest_timestamp(notifications: list[dict]) -> str | None:
+        """Newest updated_at across ALL rows, matched or not.
+
+        The cursor describes how far the feed was read, which is independent
+        of which repos we happen to care about — filtering it by repo would
+        make the cursor lag behind the feed and re-read the gap forever.
+        """
+        newest: str | None = None
+        for notif in notifications:
+            updated_at = notif.get("updated_at")
+            if updated_at and (newest is None or updated_at > newest):
+                newest = updated_at
+        return newest
+
+    def _build_alerts(self, notifications: list[dict]) -> list[WatchAlert]:
+        """Filter to configured repos and previously-unseen ids, emit alerts."""
+        alerts: list[WatchAlert] = []
+        for notif in notifications:
+            notif_id = notif["id"]
+
+            # Rows from the re-requested overlap window that we already
+            # emitted. Suppressed by ID, never by timestamp — a timestamp
+            # filter here would also discard an unseen notification that
+            # happens to share the second.
+            if notif_id in self._seen_ids:
+                continue
+
+            repo_full = notif["repository"]["full_name"]
+            if repo_full not in self.repos:
+                continue
+
+            subject = notif["subject"]
+            alerts.append(WatchAlert(
+                event_id=notif_id,
+                instance_id=self.instance_id,
+                scope=self.scope,
+                access_path="api",
+                platform="github",
+                raw_post_ref=self._api_url_to_web_url(notif),
+                content=Content(
+                    type=self._normalize_type(subject["type"]),
+                    title=subject["title"],
+                    body="",  # /notifications doesn't include body
+                    author=repo_full,  # best we have without an extra request
+                    attachments=[],
+                ),
+                timestamp=notif["updated_at"],
+            ))
+        return alerts
+
     async def fetch(
         self, since_cursor: str | None
     ) -> tuple[list[WatchAlert], str | None]:
@@ -153,6 +206,7 @@ class GitHubApiAdapter:
         since_param = _overlap(since_cursor)
 
         notifications: list[dict] = []
+        exhausted = False
         for page in range(1, _MAX_PAGES + 1):
             url = (
                 f"{_GITHUB_API}/notifications"
@@ -168,71 +222,53 @@ class GitHubApiAdapter:
             # everything past the first page, and a full page is
             # indistinguishable from a complete one.
             if len(batch) < _PER_PAGE:
+                exhausted = True
                 break
-        else:
-            logger.warning(
-                "instance=%s stopped at the %d-page cap; older notifications "
-                "in this window were not fetched",
-                self.instance_id, _MAX_PAGES,
+
+        if not exhausted:
+            # Hit the page cap with more still to read. The feed is sorted
+            # newest-first, so the unread remainder is OLDER than everything
+            # fetched — and advancing the cursor to the newest row would put
+            # it permanently beyond them. Hold the cursor instead: this poll's
+            # alerts still ship, and the next poll re-reads the same window
+            # rather than skipping what it never saw.
+            #
+            # A visible stall beats silent loss. The warning fires every poll
+            # until the backlog drains or the cap is raised.
+            logger.error(
+                "instance=%s hit the %d-page cap (%d notifications) with more "
+                "remaining; holding the cursor at %s so older unread rows are "
+                "not skipped",
+                self.instance_id, _MAX_PAGES, len(notifications), since_cursor,
             )
+            self._pending_seen_ids = None
+            return self._build_alerts(notifications), since_cursor
 
-        alerts: list[WatchAlert] = []
-        newest_seen: str | None = None
-
-        for notif in notifications:
-            notif_id = notif["id"]
-            updated_at = notif.get("updated_at")
-
-            # Track the newest timestamp across ALL rows, not just matched
-            # ones — the cursor describes how far the feed was read, which is
-            # independent of which repos we care about.
-            if updated_at and (newest_seen is None or updated_at > newest_seen):
-                newest_seen = updated_at
-
-            # Rows from the re-requested overlap window that we already
-            # emitted. Suppressed by ID, never by timestamp — a timestamp
-            # filter here would also discard an unseen notification that
-            # happens to share the second.
-            if notif_id in self._seen_ids:
-                continue
-
-            repo_full = notif["repository"]["full_name"]
-            if repo_full not in self.repos:
-                continue
-
-            subject = notif["subject"]
-            subject_type = subject["type"]
-            title = subject["title"]
-            web_url = self._api_url_to_web_url(notif)
-
-            alerts.append(WatchAlert(
-                event_id=notif_id,
-                instance_id=self.instance_id,
-                scope=self.scope,
-                access_path="api",
-                platform="github",
-                raw_post_ref=web_url,
-                content=Content(
-                    type=self._normalize_type(subject_type),
-                    title=title,
-                    body="",  # /notifications doesn't include body
-                    author=repo_full,  # best we have without an extra request
-                    attachments=[],
-                ),
-                timestamp=notif["updated_at"],
-            ))
-
+        newest_seen = self._newest_timestamp(notifications)
+        alerts = self._build_alerts(notifications)
         cursor = newest_seen if newest_seen is not None else since_cursor
 
-        # Remember every id inside the window the next poll will re-request,
-        # so the overlap costs a set lookup rather than duplicate alerts.
-        # Bounded by the window, not by feed size, so it cannot grow without
-        # limit the way a full seen-set would.
+        # Ids inside the window the next poll will re-request, so the overlap
+        # costs a set lookup rather than duplicate alerts. Bounded by the
+        # window, not by feed size.
+        #
+        # Held PENDING, not committed. Recording these here would defeat the
+        # instance's cursor safety: a delivery failure correctly holds the
+        # cursor, but the re-fetch would then suppress these very rows as
+        # "already seen" and the alerts would be lost with the cursor still
+        # looking correct. WatcherInstance calls commit() once delivery is
+        # confirmed.
         if cursor is not None:
             boundary = _overlap(cursor)
-            self._seen_ids = {
+            self._pending_seen_ids = {
                 n["id"] for n in notifications
                 if boundary is None or (n.get("updated_at") or "") >= boundary
             }
 
         return alerts, cursor
+
+    def commit(self) -> None:
+        """Promote pending dedup state — called only after confirmed delivery."""
+        if self._pending_seen_ids is not None:
+            self._seen_ids = self._pending_seen_ids
+            self._pending_seen_ids = None
