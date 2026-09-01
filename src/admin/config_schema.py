@@ -143,6 +143,14 @@ _SUPPORTED_ADAPTERS = frozenset({
     ("github", "api"),
 })
 
+# (platform, surface) pairs that src/publisher has an adapter for. Phase A is
+# deliberately the two destinations we already run; Meta surfaces land in
+# Phase C, gated on developer-account verification.
+_SUPPORTED_PUBLISHERS = frozenset({
+    ("matrix", "room"),
+    ("discord", "channel"),
+})
+
 
 @dataclass
 class InstanceConfig:
@@ -494,6 +502,39 @@ def validate_config(config: KnarrConfig) -> None:
                     f"Instance '{inst.id}': credentials_ref.secret_key "
                     f"must be a string, got {type(secret_key).__name__}"
                 )
+
+    seen_publisher_ids: set[str] = set()
+    for pub in config.publishers:
+        # Duplicates are rejected outright: the fan-out resolves targets by id,
+        # so two entries sharing one would make which credential gets used a
+        # matter of dict ordering.
+        if pub.id in seen_publisher_ids:
+            errors.append(f"duplicate publisher id: {pub.id}")
+        seen_publisher_ids.add(pub.id)
+
+        if not any(pub.scope.startswith(p) for p in _VALID_SCOPE_PREFIXES):
+            errors.append(
+                f"Publisher '{pub.id}': scope '{pub.scope}' must start with "
+                f"one of {_VALID_SCOPE_PREFIXES}"
+            )
+
+        if (pub.platform, pub.surface) not in _SUPPORTED_PUBLISHERS:
+            supported = ", ".join(
+                f"{p}/{s}" for p, s in sorted(_SUPPORTED_PUBLISHERS)
+            )
+            errors.append(
+                f"Publisher '{pub.id}': no publisher adapter for "
+                f"{pub.platform}/{pub.surface} (supported: {supported})"
+            )
+
+        if pub.credentials_ref is not None:
+            for key in ("secret_name", "secret_key"):
+                value = pub.credentials_ref.get(key)
+                if not isinstance(value, str) or not value:
+                    errors.append(
+                        f"Publisher '{pub.id}': credentials_ref.{key} is "
+                        f"required and must be a non-empty string"
+                    )
 
     if errors:
         raise ConfigError("\n  - " + "\n  - ".join(errors))

@@ -574,6 +574,42 @@ def test_parse_rejects_publisher_missing_required_field():
         KnarrConfig.from_dict(bad, community_loader=lambda _: VALID_COMMUNITY)
 
 
+def _publisher(**overrides):
+    base = dict(VALID_PUBLISHER)
+    base.update(overrides)
+    return {**VALID_INDEX, "publishers": [base]}
+
+
+def test_validate_rejects_publisher_with_bad_scope():
+    _expect_config_error(_publisher(scope="garbage/mtl"), "scope")
+
+
+def test_validate_rejects_publisher_without_an_adapter():
+    _expect_config_error(
+        _publisher(platform="facebook", surface="page-feed"),
+        "no publisher adapter for facebook/page-feed",
+    )
+
+
+def test_validate_rejects_duplicate_publisher_ids():
+    cfg = {**VALID_INDEX, "publishers": [VALID_PUBLISHER, VALID_PUBLISHER]}
+    _expect_config_error(cfg, "duplicate publisher id")
+
+
+def test_validate_rejects_publisher_credentials_ref_missing_key():
+    _expect_config_error(
+        _publisher(credentials_ref={"secret_name": "s"}),
+        "credentials_ref.secret_key",
+    )
+
+
+def test_validate_accepts_a_good_publisher():
+    parsed = KnarrConfig.from_dict(
+        _publisher(), community_loader=lambda _: VALID_COMMUNITY,
+    )
+    validate_config(parsed)  # must not raise
+
+
 def test_parse_instance_rejects_non_string_scope():
     """Non-string scope is caught at parse time, not at validate_config."""
     bad = {
