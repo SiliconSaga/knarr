@@ -13,10 +13,25 @@ Configuration via environment variables:
     DISCORD_TOKEN          Discord bot token (for bridge login)
 """
 
+import asyncio
 import os
 import sys
+from datetime import UTC, datetime
+from pathlib import Path
 
 import click
+
+from src.publisher.factory import UnsupportedPublisher, build_publishers
+from src.publisher.fanout import fan_out
+from src.publisher.registry import AuthorizationError, PublisherRegistry
+from src.publisher.schemas import (
+    PublishRequest,
+    Target,
+    content_digest,
+    derive_request_id,
+)
+from src.publisher.store import JsonResultStore
+from src.watchers.schemas import Content
 
 from .bridge import BridgeManager
 from .client import MatrixAdminClient
@@ -439,6 +454,99 @@ def admin_token():
     client = get_client()
     token = client.get_token()
     click.echo(token)
+
+
+# --- Publish command (the `cli` origin) ---
+
+@cli.command("publish")
+@click.option("--config", "config_path", default="config/knarr.yaml",
+              help="Config file path")
+@click.option("--scope", required=True, help="Identity scope, e.g. community/mtl")
+@click.option("--targets", required=True, help="Comma-separated publisher ids")
+@click.option("--body", default=None, help="Message body")
+@click.option("--body-file", type=click.Path(exists=True), default=None,
+              help="Read the body from a file")
+@click.option("--title", default="", help="Optional title")
+@click.option("--verb", default="post",
+              type=click.Choice(["post", "comment", "message"]))
+@click.option("--dry-run", is_flag=True,
+              help="Resolve, authorize and validate, but send nothing")
+@click.option("--store", "store_path", default=".knarr/publish-results.json",
+              help="Where publish results are recorded")
+def publish(config_path, scope, targets, body, body_file, title, verb,
+            dry_run, store_path):
+    """Publish one piece of content to several destinations.
+
+    Approval is that you ran this command. With one operator that is a
+    complete and honest answer, and it is recorded as exactly that.
+    """
+    if not body and not body_file:
+        click.echo("Provide --body or --body-file", err=True)
+        sys.exit(1)
+    if body_file:
+        body = Path(body_file).read_text(encoding="utf-8")
+
+    try:
+        config = load_config(config_path)
+        validate_config(config)
+    except ConfigError as e:
+        click.echo(f"Config error: {e}", err=True)
+        sys.exit(1)
+
+    def _no_password():
+        click.echo("KNARR_BRIDGE_PASSWORD is required", err=True)
+        sys.exit(1)
+
+    client = client_from_env(
+        "KNARR_BRIDGE_USER", "KNARR_BRIDGE_PASSWORD", "knarr", _no_password,
+    )
+
+    try:
+        publishers = build_publishers(config.publishers, client)
+    except UnsupportedPublisher as e:
+        click.echo(f"{e}", err=True)
+        sys.exit(1)
+
+    content = Content(type="post", title=title, body=body,
+                      author="knarr", attachments=[])
+    target_list = [
+        Target(publisher_id=pid.strip(), verb=verb, content=content)
+        for pid in targets.split(",") if pid.strip()
+    ]
+    request = PublishRequest(
+        request_id=derive_request_id(scope, target_list, content_digest(content)),
+        scope=scope,
+        targets=target_list,
+        origin="cli",
+        approved_by=f"cli:{os.environ.get('USER', 'unknown')}",
+        approved_at=datetime.now(UTC).isoformat(),
+    )
+
+    click.echo(
+        f"request {request.request_id}  scope {scope}  "
+        f"{len(target_list)} target(s)"
+        f"{'  [DRY RUN]' if dry_run else ''}"
+    )
+
+    try:
+        report = asyncio.run(fan_out(
+            request, PublisherRegistry(publishers),
+            JsonResultStore(store_path), dry_run=dry_run,
+        ))
+    except AuthorizationError as e:
+        click.echo(f"  {_ACTION_ICONS['error']} {e}", err=True)
+        sys.exit(1)
+
+    for v in report.violations:
+        click.echo(f"  {_ACTION_ICONS['error']} {v.publisher_id}: {v.reason}")
+    for err in report.errors:
+        click.echo(f"  {_ACTION_ICONS['error']} {err}")
+    click.echo(
+        f"published {report.published}  skipped {report.skipped}  "
+        f"failed {report.failed}  blocked {len(report.violations)}"
+    )
+    if report.failed or report.violations:
+        sys.exit(2)
 
 
 if __name__ == "__main__":
