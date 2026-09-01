@@ -171,7 +171,7 @@ class Publisher(Protocol):
 
 ✅ confident · ⚠️ believed, unverified · ❓ unknown · — not applicable to this surface
 
-Two things fall out even from a sketch this rough. **Instagram's "media required" and "JPEG only" are the only hard blockers in the matrix** — and volundr#12 has now removed the second by adding a `jpg` output kind to `flyer-kit`. And **send windows are the genuinely novel constraint**: nothing else here has a notion of *you may not speak right now*, and it is the one rule that can make a perfectly valid message unsendable for reasons of timing rather than content.
+Two things fall out even from a sketch this rough. **Instagram's "media required" and "JPEG only" are the only hard blockers in the matrix** — and volundr#12 (merged) removed the second by adding a `jpg` output kind to `flyer-kit`, so a compliant asset is now producible. And **send windows are the genuinely novel constraint**: nothing else here has a notion of *you may not speak right now*, and it is the one rule that can make a perfectly valid message unsendable for reasons of timing rather than content.
 
 ### Platforms deliberately not modelled yet
 
@@ -410,7 +410,7 @@ Phases A and B are entirely unblocked today.
 - **A publish is irreversible in a way a site deploy is not.** A bad merge is fixed by another merge; a bad Facebook post has already reached feeds. Argues for `--dry-run` as the learning default and genuinely strict validation.
 - **Political campaign Pages carry extra Meta enforcement** — authorization requirements, disclaimers, stricter review. Never the target of a first run of anything.
 - **`ObjectRef` persistence is the hinge of the engagement half.** Lose it and inbound comments cannot be tied to what they are about.
-- **Silent success is the failure mode this codebase keeps producing.** The router reported delivery Synapse had rejected; Strimzi ignores a topic naming a cluster that does not exist; a watcher instance can fail every cycle and look healthy. **A publisher that reports a post it did not make is that bug with a worse blast radius.** Every publisher verifies its result and surfaces failure loudly.
+- **Silent success is the failure mode this codebase keeps producing** — and the inbound side has just spent three review rounds proving it. The router reported delivery Synapse had rejected, then dropped the alert anyway once the rejection was visible; a watcher advanced its cursor past events that never reached Kafka; an adapter's own dedup state quietly re-suppressed the rows a held cursor was protecting; Strimzi ignores a topic naming a cluster that does not exist. All fixed in #8, and every one of them passed a green test suite first. **A publisher that reports a post it did not make is that same bug pointed outward, where the blast radius is other people's feeds.** So: every publisher verifies its result, surfaces failure loudly, and — per Idempotency above — treats an ambiguous outcome as something to reconcile rather than retry.
 - **The capability table is a hypothesis.** Building against an unverified cell is how "Instagram accepts PNG" becomes a runtime discovery.
 
 ---
