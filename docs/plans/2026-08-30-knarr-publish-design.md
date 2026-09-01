@@ -1,7 +1,7 @@
-# Knarr Publish Design — outbound fan-out and the origin axis
+# Knarr Publish Design — outbound fan-out, capabilities, and the origin axis
 
-**Date:** 2026-08-30
-**Status:** Draft, ready for review
+**Date:** 2026-08-30 (revised 2026-08-31 — capability model, scope authorization, idempotency, media handling)
+**Status:** Draft, in review
 **Component:** knarr
 **Builds on:** [Source-Identity Design](2026-05-30-knarr-source-identity-design.md) (the inbound complement — watcher instances, adapters, scope, credentials) · [the OG 2026-04-02 design](../../../../realms/realm-siliconsaga/docs/plans/2026-04-02-knarr-design.md) (Matrix/Kafka layers, the approve-then-fan-out topics)
 
@@ -9,14 +9,15 @@
 
 ## Overview
 
-Knarr can read from platforms and route what it finds into Matrix. It cannot write anything back out. This design adds the write half: publishing original content to several platforms at once, and — because they are the same capability — replying to the things the watchers surface.
+Knarr can read from platforms and route what it finds into Matrix. It cannot write anything back out. This design adds the write half: publishing original content to several platforms at once, and — because they share a transport — replying to the things the watchers surface.
 
-Two orthogonal axes, and separating them is the whole design:
+Three ideas carry the design:
 
-- **Destination** — *where content goes*, expressed as a `PublisherInstance`, the mirror of `WatcherInstance`.
+- **Destination** — *where content goes*, as a `PublisherInstance` mirroring `WatcherInstance`.
+- **Capability** — *what a given destination can actually do*, because platforms differ sharply and pretending otherwise pushes the differences into runtime failures.
 - **Origin** — *how a publish request gets authored and approved*, which differs per community and must not be hardcoded.
 
-The second axis is the one that is easy to miss. An early version of this design assumed a GitHub pull-request merge was **the** approval gate, because the first real case (Mountain Top League) is a GitHub-hosted site with an existing PR-preview pipeline. That assumption does not survive contact with the second case: the PTA has no site, no repo, and no PR to merge, so a merge-shaped gate is not merely inconvenient there, it does not exist.
+The last two are both corrections to earlier drafts, and both came from the same instinct: **an abstraction that flattens real differences does not remove them, it relocates them to somewhere worse.**
 
 ---
 
@@ -24,7 +25,7 @@ The second axis is the one that is easy to miss. An early version of this design
 
 ### The gap is narrower than it looks, and in an unexpected place
 
-The OG design already specified the outbound *topology*. Four of the six Kafka topics Knarr provisions exist for exactly this flow:
+The OG design already specified the outbound *topology*. Four of the six Kafka topics Knarr provisions exist for this flow:
 
 | Topic | Purpose (OG design) |
 |---|---|
@@ -39,7 +40,7 @@ So the pipeline was designed. **What was never built is any publisher at all** �
 
 ### The user-facing problem
 
-One person supports several communities as "the computer guy" rather than as a member of an organizing team. A new soccer season means the same information — dates, times, pricing, a registration link, a flyer image — has to appear on a website, a Facebook Page, an Instagram account, and increasingly a WhatsApp group, each with its own format, its own limits, and its own way of telling you afterwards that somebody replied. Doing that by hand is not hard so much as it is repetitive, error-prone across copies, and unbounded in how much attention it consumes afterwards.
+One person supports several communities as "the computer guy" rather than as a member of an organizing team. A new soccer season means the same information — dates, times, pricing, a registration link, a flyer image — has to appear on a website, a Facebook Page, an Instagram account, and increasingly a WhatsApp group, each with its own format, its own limits, and its own way of telling you afterwards that somebody replied.
 
 The value is not automation for its own sake. It is that **one approved thing becomes N correctly-formatted posts, and everything that comes back lands in one place.**
 
@@ -47,223 +48,310 @@ The value is not automation for its own sake. It is that **one approved thing be
 
 ## Audience reality, and what it removes from v1
 
-The source-identity design named three user groups. This design adds a constraint that materially shrinks v1: **for the foreseeable future there is exactly one operator.** Not a team of organizers with a volunteer rota — one person, supporting three communities from outside them.
+**For the foreseeable future there is exactly one operator.** Not a team with a volunteer rota — one person supporting three communities from outside them.
 
-Consequences, taken deliberately:
+Taken deliberately:
 
-- **No multi-person approval routing in v1.** `routing.pending` / `routing.decisions` stay provisioned but unused by the publish path. They are the right primitives for a real team and the wrong complexity for a team of one.
-- **No assignment, claiming, or "who is handling this".** Inbound engagement lands in a room; the operator reads it.
-- **No role model beyond "the operator".** Keycloak groups already exist for when this changes; nothing here depends on them.
+- **No multi-person approval routing in v1.** `routing.pending` / `routing.decisions` stay provisioned but unused by the publish path.
+- **No assignment, claiming, or "who is handling this".**
+- **No role model beyond "the operator".**
 
-This is a v1 scope decision, not an architectural one. Every piece below still works unchanged when a second person appears — the difference is that approval currently has one possible answerer.
+A v1 scope decision, not an architectural one. Everything below works unchanged when a second person appears.
 
 ---
 
-## Axis 1 — Destination: the `PublisherInstance`
+## Axis 1 — Destination and capability
 
-Deliberately the mirror image of `WatcherInstance`, because the two problems are the same problem pointed in opposite directions.
+### The `PublisherInstance`
+
+Mirrors `WatcherInstance`, because the two problems are the same problem pointed in opposite directions.
 
 ```yaml
 publishers:
-  - id: mtl-facebook
+  - id: mtl-facebook-page
     platform: facebook
-    access_path: admin-app          # admin-app | cloud-api | bridge | api
+    surface: page-feed              # a Page is TWO destinations — see below
+    access_path: admin-app
     scope: community/mtl
     credentials_ref:
       secret_name: knarr-cred-community-mtl-page-token
       secret_key: FB_PAGE_TOKEN
-    capabilities: [post, reply]     # what this destination can actually do
+
+  - id: mtl-facebook-messenger
+    platform: facebook
+    surface: messenger              # same Page, same token, different capabilities
+    access_path: admin-app
+    scope: community/mtl
+    credentials_ref:
+      secret_name: knarr-cred-community-mtl-page-token
+      secret_key: FB_PAGE_TOKEN
 
   - id: mtl-instagram
     platform: instagram
+    surface: feed
     access_path: admin-app
     scope: community/mtl
     credentials_ref:
       secret_name: knarr-cred-community-mtl-ig
       secret_key: IG_TOKEN
-    capabilities: [post]            # IG comment replies are Phase 2 work
-    constraints:
-      image_required: true          # IG cannot post text alone
-      image_format: jpeg            # and rejects PNG outright
-
-  - id: mtl-matrix
-    platform: matrix
-    access_path: api
-    scope: community/mtl
-    capabilities: [post, reply]
 ```
 
-Each publisher exposes the same interface regardless of platform. A `Publisher` protocol mirrors the inbound `Adapter` protocol:
+**`surface` is why a Facebook Page appears twice.** The Page's feed is broadcast-plus-comments and genuinely awkward to work with; Messenger is conversational and behaves far more like Discord or Matrix. Modelling "facebook" as one destination is what made it look uniformly difficult. Splitting by surface lets each half declare honestly what it can do — and Messenger turns out to be one of the *easier* destinations, not one of the hardest.
+
+### Three verbs, not two
+
+An earlier draft had `post()` and `reply()`, which was wrong twice over: it implied every destination could do both, and it collapsed two genuinely different operations into one word.
+
+| Verb | Means | Example destinations |
+|---|---|---|
+| `post` | Create a top-level item on a feed others follow | FB Page feed, Instagram, Matrix room, Discord channel |
+| `comment` | Respond to a specific feed item | FB Page feed, Instagram, Matrix thread, Discord thread |
+| `message` | Send into a conversation with someone | FB Messenger, WhatsApp, Matrix DM, Discord DM |
+
+Replying to a feed comment and sending into a conversation obey different rules — the second has delivery windows, the first does not. One word for both would hide exactly the constraint that matters.
+
+### Capability protocols, not one interface
+
+A publisher implements only what its surface can do. Calling code asks rather than assumes.
+
+```python
+class Broadcaster(Protocol):
+    async def post(self, content: Content) -> PublishResult: ...
+
+class Commenter(Protocol):
+    async def comment(self, parent: ObjectRef, content: Content) -> PublishResult: ...
+
+class Conversational(Protocol):
+    async def message(self, thread: ThreadRef, content: Content) -> PublishResult: ...
+
+class Reactor(Protocol):
+    async def react(self, target: ObjectRef, emoji: str) -> PublishResult: ...
+
+class Editable(Protocol):
+    async def edit(self, target: ObjectRef, content: Content) -> PublishResult: ...
+```
+
+An Instagram publisher implements `Broadcaster` + `Commenter` and simply does not implement `Conversational` — it has no conversations. A WhatsApp publisher implements `Conversational` and nothing else — it has no feed. **A `social.yml` targeting WhatsApp with a `post` fails validation at authoring time**, with "whatsapp cannot post; it can message", rather than failing at publish time with a platform error.
+
+Every publisher additionally implements a small shared surface:
 
 ```python
 class Publisher(Protocol):
-    async def post(self, content: Content) -> PublishResult: ...
-    async def reply(self, in_reply_to: str, content: Content) -> PublishResult: ...
-    def validate(self, content: Content) -> list[Violation]: ...
+    id: str
+    scope: str
+    capabilities: frozenset[str]        # {"post", "comment"} — derived, not configured
+    constraints: Constraints            # media requirements, formats, windows, limits
+    def validate(self, verb: str, content: Content) -> list[Violation]: ...
 ```
 
-`validate` is not decoration. It is what makes a dry run meaningful and what turns "Instagram will reject this" from a runtime failure into a pre-publish error — see *Validation is the load-bearing part* below.
+`capabilities` is **derived from which protocols the class implements**, not declared in YAML. A configured capability list would drift from the code the first time an adapter changed.
 
-**`PublishResult` carries the platform's own id** (`post_id`, `media_id`, Matrix `event_id`). That id is the correlation key for everything inbound afterwards: a comment on a Page post is only connectable to "the fall soccer announcement" because we recorded what the platform called it. Losing it means the engagement half cannot work.
+---
 
-### Why `capabilities` and `constraints` are per-instance rather than per-platform
+## The capability landscape — illustrative, not authoritative
 
-Because they genuinely vary by access path and by account, not just by platform. An Instagram account reachable through an admin app can publish; the same platform reached by a personal-login scrape cannot. Encoding these on the platform would force the exceptions into code.
+> **⚠ Read this table as a sketch of the problem shape, not as a specification.**
+>
+> It exists to make the *variation* concrete — to show that "publish to social" is not one operation — and it will be wrong in places. Several cells are unverified because the Meta developer account is currently stuck in a [platform-side verification loop](https://communityforums.atmeta.com/discussions/Questions_Discussions/stuck-in-verification-loop---cannot-create-app-for-whatsapp-api/1368496), so they cannot be tested at all yet.
+>
+> **Expect to revise this repeatedly** — when each adapter is built, when a platform changes its API, and when new platforms are added. Any implementation plan derived from this design should verify the cells it depends on rather than trusting them. A cell that has not been exercised by working code is a hypothesis.
+
+| | Matrix | Discord | FB Page feed | FB Messenger | Instagram | WhatsApp |
+|---|---|---|---|---|---|---|
+| `post` | ✅ | ✅ | ✅ | — | ✅ media-only | — |
+| `comment` | ✅ thread | ✅ thread | ✅ | — | ✅ | — |
+| `message` | ✅ DM | ✅ DM | — | ✅ | — | ✅ |
+| `react` | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
+| `edit` | ✅ | ✅ | ⚠️ partial | — | ❓ | ❓ |
+| `delete` | ✅ redact | ✅ | ✅ | ⚠️ | ✅ | ❓ |
+| Media required | no | no | no | no | **yes** | no |
+| Media format | any | any | flexible | flexible | **JPEG only** | several |
+| Send window | none | none | none | **24h + tags** | none | **24h / template** |
+| Rich text | HTML | markdown | plain-ish | plain-ish | plain | limited |
+
+✅ confident · ⚠️ believed, unverified · ❓ unknown · — not applicable to this surface
+
+Two things fall out even from a sketch this rough. **Instagram's "media required" and "JPEG only" are the only hard blockers in the matrix** — and volundr#12 has now removed the second by adding a `jpg` output kind to `flyer-kit`. And **send windows are the genuinely novel constraint**: nothing else here has a notion of *you may not speak right now*, and it is the one rule that can make a perfectly valid message unsendable for reasons of timing rather than content.
+
+### Platforms deliberately not modelled yet
+
+Not because they do not matter — because adding them before the first two adapters exist would be designing against guesses.
+
+- **X/Twitter.** Whatever becomes of the platform, people are still there, so compatibility is a plausible future want. Its API terms and pricing are volatile enough that any design written now would be stale.
+- **Reddit.** Already a *source* in the inbound design, and its anonymous read path just closed (see `operations.md`), which is a warning about assuming stability. As a destination it is a `post` + `comment` surface with strong per-subreddit norms.
+- **Bluesky, Mastodon, LinkedIn, Nextdoor, YouTube.** Each appears in the source-identity taxonomy on the inbound side.
+
+The capability model is the mechanism for absorbing these: a new platform is a new adapter declaring which protocols it implements, and a new row in a table that was always going to need more rows.
 
 ---
 
 ## Axis 2 — Origin: how a publish request is authored and approved
 
-**The gate is a property of the community, not of the system.** This is the central claim of this design.
+**The gate is a property of the community, not of the system.**
 
 | Origin | Fits | Approval is | Status |
 |---|---|---|---|
-| `git-merge` | A community centred on a GitHub-hosted site — MTL, local campaigns | Merging the PR | **Specified below** |
-| `cli` | A community with no site — the PTA today | Running the command | **Specified below** |
-| `matrix` | Any community once chat organizing actually exists | Reacting to a draft in a room | **Seam only** — see below |
+| `git-merge` | A community centred on a GitHub-hosted site — MTL, campaigns | Merging the PR | **Specified** |
+| `cli` | A community with no site — the PTA today | Running the command | **Specified** |
+| `matrix` | Any community once chat organizing exists | Reacting to a draft | **Seam only** |
 
-An origin's only job is to produce a validated **PublishRequest** and assert that a human approved it. Everything downstream — validation, formatting, fan-out, result recording — is shared.
+An origin's only job is to produce a validated, authorized `PublishRequest` and assert that a human approved it. Everything downstream is shared.
 
 ```python
 @dataclass
 class PublishRequest:
-    request_id: str            # stable, dedupe key
-    scope: str                 # community/mtl
-    targets: list[str]         # publisher instance ids
-    content: Content           # body, media refs, link
-    per_target: dict[str, Content]   # optional overrides
-    origin: str                # git-merge | cli | matrix
-    approved_by: str           # who, and via which surface
+    request_id: str                  # deterministic; see Idempotency
+    scope: str                       # community/mtl
+    targets: list[Target]            # publisher id + verb + per-target content
+    origin: str                      # git-merge | cli | matrix
+    approved_by: str
     approved_at: str
+
+@dataclass
+class Target:
+    publisher_id: str
+    verb: str                        # post | comment | message
+    content: Content                 # already resolved for this destination
+    parent: ObjectRef | None         # for comment/message
 ```
 
-Emitted to `knarr.messages.outbound`. A single consumer fans out. **Adding an origin never touches the publishers, and adding a platform never touches the origins.**
+**Adding an origin never touches the publishers, and adding a platform never touches the origins.**
 
 ---
 
-## Origin: `git-merge` (specified)
+## Authorization, idempotency, and result identity
 
-For MTL and campaigns, where a site repo already exists and volundr already renders, previews and visually diffs every change.
+These three were absent from the first draft and each is load-bearing.
 
-### The manifest lives beside the assets it describes
+### Scope authorization happens before credentials are resolved
 
-```text
-mtl-soccer/flyers/fall-2026/
-  flyers.conf          how to render        (volundr)
-  social.yml           where it goes        (this design)
-  index.html
-  instagram.html
-  exports/
-    mtl-soccer-fall-2026.pdf
-    mtl-soccer-fall-2026-instagram.jpg
+A `PublishRequest` names target publishers by id. Nothing in the first draft checked that those publishers belonged to the request's *scope* — so a typo or a bug could have published MTL content through a campaign's credentials. That is the worst failure this system could have.
+
+**Every target is authorized before fan-out, and the check is on the resolved instance rather than the requested id:**
+
+1. Resolve `publisher_id` to a `PublisherInstance`; unknown id → reject the whole request.
+2. Assert `instance.scope == request.scope`; mismatch → reject the whole request, loudly. This is a bug or an attack, never a routine condition.
+3. Assert the instance implements the requested verb; missing → reject.
+4. Only then resolve credentials.
+
+Rejection is whole-request rather than per-target. A request naming a destination it has no business touching is not partially trustworthy.
+
+For `git-merge`, scope comes from the repo→scope mapping in Knarr's config, **not** from `social.yml` — a repo may declare what it wants said, but not on whose behalf. That single rule keeps a compromised or careless site repo from reaching another community's Page.
+
+### Idempotency, because fan-out is partial by nature
+
+Publishing N destinations is N independent calls, any of which may fail, and a retry must not repost the ones that succeeded.
+
+- **`request_id` is derived deterministically from immutable source data**, never generated fresh on retry. For `git-merge`: the merge commit SHA plus the campaign path. For `cli`: a hash of scope, targets, and content. The same input always yields the same id.
+- **Outcomes are recorded per `(request_id, publisher_id, verb)`**, durably, before the next target is attempted.
+- **A retry skips targets already recorded as succeeded.** Only unrecorded or failed targets are attempted.
+- **Ambiguous outcomes are reconciled, not retried blindly.** If a call times out with no result, the publisher queries the platform for a matching recent object where the API allows, and otherwise marks the target `uncertain` and surfaces it. Reposting on ambiguity is how a community gets the same announcement twice.
+
+### `PublishResult` identity is composite
+
+A bare platform id is not enough to act on later. Two Pages can produce indistinguishable comment ids, and a reply must go out through the same instance and credentials that made the original post.
+
+```python
+@dataclass
+class ObjectRef:
+    publisher_id: str     # which instance — determines adapter AND credentials
+    platform: str
+    surface: str
+    object_type: str      # post | comment | message | media
+    object_id: str        # what the platform calls it
 ```
 
-```yaml
-# social.yml
-scope: community/mtl
-targets:
-  - publisher: mtl-facebook
-    caption: |
-      Fall soccer registration is open! Saturdays 9am at O'Connor Field.
-      $85 per player, ages 5-12. Register: https://mountaintopleague.com/register
-    media: exports/mtl-soccer-fall-2026-instagram.jpg
-  - publisher: mtl-instagram
-    caption_from: mtl-facebook      # reuse, or write a distinct one
-    media: exports/mtl-soccer-fall-2026-instagram.jpg
-  - publisher: mtl-matrix
-    caption: "Fall registration is live — flyer attached, please share."
-    media: exports/mtl-soccer-fall-2026.pdf
-```
-
-Placement is deliberate. The caption is *content*, so it belongs with the content, edited by whoever edits the flyer, in the same pull request, reviewed in the same diff. A caption living in Knarr's config would be a change to infrastructure in order to fix a typo.
-
-**The manifest never names a credential.** It references publishers by id; Knarr resolves identity and secrets. This is what lets a public site repo declare where its content goes without holding a token — see *The volundr boundary*.
-
-### The trigger: Knarr polls, and does not receive
-
-Knarr runs on a private cluster with no inbound path, and volundr's stated trust model is **"no custom secrets anywhere — jobs use only the ephemeral `GITHUB_TOKEN`."** A GitHub Action calling into Knarr would need a credential that repo is explicitly designed not to hold, and exposing a webhook endpoint would mean putting an ingress in front of a private cluster.
-
-So a `git-merge` origin instance polls its watched repos for merged pull requests touching a path that contains a `social.yml`, on the cadence its config declares. Latency is minutes, which is correct for content that took days to write.
-
-Both properties are preserved: **GitHub holds no Knarr secret, and the cluster accepts no inbound connection.** If latency ever matters, a Tailscale-reachable webhook endpoint is the upgrade path and changes only the trigger, not the flow.
-
-### Ordering constraint, easy to get wrong
-
-Instagram fetches media **over HTTP from a public URL**. The gh-pages deploy provides exactly that — but only after it runs. So the publish must wait for the site deploy of the same merge to complete, or the fetch 404s.
-
-The origin therefore waits on the deploy workflow's status for the merge commit before emitting the request. A publish that beat its own asset into existence would fail in a way that looks like a Meta problem.
+This is what makes the engagement loop work: a comment arrives on an MTL Page post, the watcher emits it with an `ObjectRef`, the operator answers in Matrix, and the reply goes back through `mtl-facebook-page` because the ref says so. **Storage must outlive a pod** — Kafka is a log, not a lookup. Postgres via a Mimir `DataService` is the obvious home and would make Knarr the shared cluster's second consumer.
 
 ---
 
-## Origin: `cli` (specified)
+## Topics and contracts
 
-For the PTA today: no repo, no site, no PR. The operator has content and wants it in two places.
+`knarr.messages.outbound` already has a meaning from the OG design — *messages approved for publishing*, with Autoboros as an intended consumer. Putting a differently-shaped `PublishRequest` on it would silently change a contract another component was written against.
 
-```bash
-knarr publish --scope group/pta \
-  --targets pta-facebook,pta-whatsapp \
-  --caption-file ./announcement.md \
-  --media ./photo.jpg \
-  --dry-run
+So:
 
-knarr publish --scope group/pta --targets pta-facebook,pta-whatsapp \
-  --caption-file ./announcement.md --media ./photo.jpg
+- **`knarr.publish.requests`** — new topic, carries `PublishRequest`. Owned by this design.
+- **`knarr.publish.results`** — new topic, carries per-target outcomes including `ObjectRef`.
+- **`knarr.messages.outbound`** — left alone, contract intact.
+
+New topics are cheap; a contract collision found six months later is not. If the two shapes genuinely converge, merging them later is a deliberate migration rather than an accident.
+
+---
+
+## Media handling
+
+The first draft hand-waved this and got two things wrong.
+
+### A replayable record must not carry a perishable URL
+
+`knarr.publish.requests` has seven-day retention and is replayable by design. A short-TTL signed URL written into it is **dead on replay** — the request would look valid and fail at fetch time for reasons no log would explain.
+
+So a request carries a **durable media reference**, and a fetchable URL is minted per delivery attempt:
+
+```python
+@dataclass
+class MediaRef:
+    kind: str            # garage-object | public-url
+    locator: str         # object key, or the URL itself
+    content_type: str
+    checksum: str        # detects the object changing underneath a replay
 ```
 
-`--dry-run` runs the full path — resolve publishers, validate per destination, render the final text — and prints exactly what would be sent where, without sending. It is the default posture while learning a new destination, and it is the same code path as a real publish rather than a simulation of it.
+- **`cli` origin** uploads local files to Garage and emits `kind: garage-object`. The publisher mints a signed URL immediately before the platform fetch, with a TTL sized to that attempt.
+- **`git-merge` origin** emits `kind: public-url` — gh-pages already serves the asset durably, which is exactly what Instagram needs.
 
-Approval is that the operator ran the command. With one operator that is a complete and honest answer; it is recorded in `approved_by` as such rather than pretending a review happened.
+### The relative-path-to-URL contract has to be written down
 
-**Media with no public URL is the one real wrinkle.** Instagram and WhatsApp both fetch from a URL, and a local file has none. The CLI origin uploads to Knarr's own media store (Garage, already in the stack) and hands the publisher a signed short-TTL URL. This is exactly the problem the `git-merge` origin gets for free from gh-pages, and it is why the media-hosting seam belongs in the shared layer rather than in either origin.
+`social.yml` says `media: exports/mtl-soccer-fall-2026-instagram.jpg`. That is a repo-relative path, and something must turn it into a URL Instagram can fetch. Left implicit, it becomes a guess in code.
+
+**The contract:** Knarr's per-repo config declares a `public_base_url` (for MTL, the custom domain gh-pages serves) and the path mapping from repo root to served root. The origin resolves the relative path against it, and the resolved URL is **validated as fetchable before the request is emitted** — a publish that beat its own asset into existence fails at authoring, not at the platform.
+
+This is also why the `git-merge` origin waits for the deploy workflow of the same merge commit to finish before emitting. Instagram fetches over HTTP; a request emitted at merge time would race a deploy that has not run.
+
+### Preflight is async and separate from validation
+
+`validate()` stays **pure and local** — no network — so it is cheap, deterministic, and safe to call anywhere including in a tight authoring loop.
+
+Fetchability is a separate `async preflight()` with a bounded timeout, run once per request before fan-out, its result reused by every target rather than re-fetched per destination. Keeping them apart means a dry run does real local validation instantly, and real network validation only when asked.
+
+**`--dry-run` runs both**, and reports them separately, so "this would be rejected by Instagram" and "this URL is not reachable" are distinguishable failures.
 
 ---
 
-## Origin: `matrix` (seam only, deliberately)
+## Replies are the same transport, not the same operation
 
-Not specified, because there is no chat-organizing habit to design against yet and inventing that workflow now means inventing its users too. What is specified is the seam it must satisfy, so adding it later is additive:
+The source-identity design scheduled reply-from-Matrix as Phase 6, sub-staged by access path. Built separately it would duplicate credential resolution, error surfacing, result recording and retry.
 
-- It must produce the same `PublishRequest` and emit to the same topic.
-- It must set `approved_by` to a Matrix user id and `origin: matrix`.
-- It may use `routing.pending` / `routing.decisions`, which exist for precisely this and stay unused until then.
-- It must not require publishers, validation or fan-out to change in any way.
+**A reply is a write to the same platform the original lives on, through the same instance, with the same credentials.** So it belongs to the publisher — but as `comment()` or `message()` depending on surface, *not* as a single `reply()`, because those obey different rules.
 
-The likely shape, recorded so the seam is not designed blind: a draft is posted to a room with its rendered media, reactions approve or reject, an approving reaction emits the request. **When a real team exists, this becomes the primary origin for anything not already living in a repo** — but that is a prediction, not a specification.
+To be explicit about what this does **not** mean: replying never crosses platforms. A comment on a Facebook post is answered on Facebook. Matrix is where the *operator* reads and types; the write goes out through the publisher that owns that scope and surface.
 
----
-
-## Replies are the same capability, not a second path
-
-The source-identity design scheduled reply-from-Matrix as Phase 6, sub-staged by access path. Designed separately, it would build a second write path with its own credentials handling, its own error surfacing and its own per-platform quirks.
-
-**A reply is a post with an `in_reply_to`.** Both are "write to platform X as scope Y with these credentials". So `reply()` is a method on the same `Publisher` protocol, using the same instance, the same secret and the same result recording. Phase 6 collapses from a subsystem into a method plus a routing rule.
-
-This is what makes the engagement half tractable: a comment arrives on a Page post, the watcher emits it with the platform's post id, the operator answers in Matrix, and the reply goes back out through the publisher that owns that scope — because the correlation key was recorded when the post was published.
+Phase 6 therefore collapses from a subsystem into two protocol methods plus a routing rule — with the `ObjectRef` recorded at publish time as the hinge that makes it possible at all.
 
 ---
 
 ## Validation is the load-bearing part
 
-Platforms fail late, vaguely, and after the interesting work is done. The value of a shared validate step is turning those into pre-publish errors:
+Platforms fail late, vaguely, and after the interesting work is done. A shared validate step turns those into authoring-time errors:
 
-- **Instagram accepts JPEG only** and rejects PNG. Caught by comparing declared media against the instance's `image_format` constraint. (volundr#12 adds the `jpg` output kind that makes a compliant asset possible at all.)
-- **Instagram cannot post text without media.** Caught by `image_required`.
-- **Media must be publicly fetchable** at publish time. Caught by resolving the URL before the container call.
-- **WhatsApp template rules** — outside a 24-hour window only pre-approved templates may be sent. A free-text WhatsApp publish outside a window is a validation failure, not a runtime surprise.
-- **Per-platform length limits**, checked against the rendered text rather than the source.
-
-A `--dry-run` that runs real validation against real instance config is the difference between a preview and a guess.
+- **Verb unsupported by surface** — "whatsapp cannot post". The most common authoring mistake, and free to catch.
+- **Instagram requires media** and **accepts JPEG only**.
+- **Send windows** — a free-text WhatsApp message outside a 24-hour window is a validation failure, not a runtime surprise.
+- **Per-platform length limits**, checked against rendered text rather than source.
+- **Scope mismatch** — see Authorization.
 
 ---
 
 ## Captions, and where AI sits
 
-Per-destination captions, authored in the manifest or the CLI invocation. The source-identity design already settled the principle for the inbound side and it transfers unchanged: **AI adaptation is infrastructure, but opt-out per consumer.**
+Per-destination captions, authored in the manifest or the CLI invocation. The source-identity principle transfers unchanged: **AI adaptation is infrastructure, but opt-out per consumer.**
 
-- `caption` — written by hand, used verbatim. Always available, always the default for anything sensitive.
+- `caption` — written by hand, used verbatim. Always the default for anything sensitive.
 - `caption_from: <publisher-id>` — reuse another target's text.
-- `adapt: true` — derive this destination's text from a base caption, respecting its length limits and conventions.
+- `adapt: true` — derive from a base caption, respecting this destination's limits and conventions.
 
-A political campaign can hand-write every word while MTL lets a soccer announcement be reshaped for Instagram. That choice is per target, not per instance, because it is a judgement about *this* message.
+A political campaign can hand-write every word while MTL lets a soccer announcement be reshaped for Instagram. Per target, not per instance, because it is a judgement about *this* message.
 
 ---
 
@@ -271,39 +359,35 @@ A political campaign can hand-write every word while MTL lets a soccer announcem
 
 volundr states two properties this design must not break: **no custom secrets anywhere**, and **a human merge is always the publish gate**.
 
-The split that preserves both:
+- **volundr renders and gates.** Builds the flyer, previews it, visually diffs it, never learns a Meta token exists.
+- **The site repo declares intent.** `social.yml` names destinations by id and supplies captions. No credentials, and — per Authorization — no authority over scope.
+- **Knarr holds identity and credentials** in-cluster, authorizes, resolves, and writes.
 
-- **volundr renders and gates.** It builds the flyer, previews it, visually diffs it, and never learns a Meta token exists.
-- **The site repo declares intent.** `social.yml` names destinations by id and supplies captions. It holds no credentials.
-- **Knarr holds identity and credentials** in-cluster, resolves publisher ids, and performs the writes.
+Knarr **polls** for merges rather than receiving a webhook: the cluster is private with no inbound path, and an Action calling Knarr would need a credential volundr is designed not to hold. Latency is minutes, which is right for content that took days to write. A Tailscale-reachable endpoint is the upgrade path if that ever changes.
 
-Under the `git-merge` origin the human merge remains the gate — Knarr reacts to it rather than replacing it. Under `cli` there is no volundr involvement to preserve.
-
-**A CI-side validator is worth adding to volundr later**: a `social.yml` that references an unknown publisher or a missing media file should fail in the PR, not at publish time. That needs only the publisher *ids*, never their secrets, so it stays inside volundr's trust model. Recorded as a follow-up, not specified here.
+A **CI-side `social.yml` validator** in volundr is worth adding later — unknown publisher id, missing media file, verb unsupported by the named destination. It needs only publisher ids and capabilities, never secrets, so it stays inside volundr's trust model.
 
 ---
 
 ## Where the PTA actually fits
 
-Worth stating plainly so it is not misfiled: **the PTA's stated problem is fragmentation, not publishing.** Communication is scattered across several WhatsApp groups and Facebook with little web presence, and the pain is that nobody can see it all.
+**The PTA's stated problem is fragmentation, not publishing.** Communication is scattered across several WhatsApp groups and Facebook with little web presence, and the pain is that nobody can see it all.
 
-That is the *inbound* half of Knarr — the aggregation the source-identity design was written for — with publishing as a secondary need. Treating the PTA as "MTL but on WhatsApp" would build the wrong thing first.
-
-The `cli` origin is specified here anyway because it is small, it unblocks the publishing the PTA does need, and it is the origin that requires no infrastructure at all. But **the PTA's first real value is aggregation**, and that ordering belongs in whatever plan follows this design.
+That is the *inbound* half of Knarr, with publishing secondary. Treating the PTA as "MTL but on WhatsApp" would build the wrong thing first. The `cli` origin is specified here anyway because it is small and needs no infrastructure — but **the PTA's first real value is aggregation**, and that ordering belongs in whatever plan follows.
 
 ---
 
 ## Phasing
 
-Ordered so that nothing is blocked on Meta developer-account verification, which is currently stuck in a platform-side loop and outside our control.
+Ordered so nothing is blocked on Meta developer-account verification, which is outside our control.
 
-**Phase A — the publisher, proven on destinations we control.** `Publisher` protocol, `PublisherInstance` config, the fan-out consumer, `PublishResult` recording. Adapters for **Matrix** and **Discord**, both of which are already running. Origin: `cli` with `--dry-run` first. *Exit: one command publishes to two real destinations and records both ids.*
+**Phase A — the publisher, on destinations we control.** Capability protocols, `PublisherInstance`, authorization, idempotent fan-out, `ObjectRef` persistence. Adapters for **Matrix** and **Discord**, both already running. Origin: `cli`, `--dry-run` first. *Exit: one command publishes to two real destinations, records both `ObjectRef`s, and a re-run reposts nothing.*
 
-**Phase B — the `git-merge` origin.** `social.yml` schema, repo polling, deploy-completion wait, correlation of a merge to a request. Still fanning out to Matrix/Discord. *Exit: merging a PR that touches `social.yml` publishes without anyone running a command.*
+**Phase B — the `git-merge` origin.** `social.yml` schema, repo→scope mapping, polling, deploy-completion wait, media URL resolution. *Exit: merging a PR publishes without anyone running a command.*
 
-**Phase C — the Meta destinations.** Facebook Page and Instagram adapters behind the same protocol, gated on the developer account unblocking. WhatsApp Cloud API alongside, since its test tier needs no business verification once an app exists. *Exit: an MTL flyer reaches a Page and an IG account from a merge.*
+**Phase C — the Meta destinations.** FB Page feed, FB Messenger, Instagram, WhatsApp, behind the same protocols. Gated on the account unblocking. *Exit: an MTL flyer reaches a Page and an IG account from a merge.*
 
-**Phase D — the engagement loop.** Comment and message watchers correlated by the ids Phase A recorded, routed into Matrix; `reply()` on the publishers that already exist. Facebook Messenger belongs here — it is the Page's DM surface, not a separate platform, and ignoring it would miss the channel people actually use to ask whether registration is still open.
+**Phase D — the engagement loop.** Comment and message watchers correlated by `ObjectRef`, routed into Matrix; `comment()` / `message()` on publishers that already exist.
 
 **Phase E — the `matrix` origin.** When chat organizing exists.
 
@@ -314,24 +398,26 @@ Phases A and B are entirely unblocked today.
 ## Deferred, with the reason stated
 
 - **Multi-person approval and volunteer triage.** One operator; the primitives exist unused.
-- **Scheduling.** "Publish at 9am Saturday" is genuinely useful and genuinely orthogonal — it is a property of the request, not the pipeline. Deliberately out of v1.
-- **Cross-posting inbound to outbound** (spot a local item, amplify it to a Page). The read side feeds the write side eventually; it needs the engagement loop first.
-- **Deletion and editing of published posts.** Platforms vary wildly and the failure modes are worse than for publishing. Not until there is a reason.
-- **Analytics.** Insights APIs exist for all of these; nobody has asked what question they would answer.
+- **Scheduling.** A property of the request, not the pipeline. Out of v1.
+- **Cross-posting inbound to outbound.** Needs the engagement loop first.
+- **Deletion and editing of published posts.** Platforms vary wildly and failure modes are worse than for publishing.
+- **Analytics.** Nobody has asked what question it would answer.
 
 ---
 
 ## Risks worth naming now
 
-- **A publish is irreversible in a way a site deploy is not.** A bad merge to gh-pages is fixed by another merge; a bad Facebook post has already reached people's feeds. This asymmetry argues for `--dry-run` as the learning default and for validation that is genuinely strict.
-- **Political campaign Pages carry extra Meta enforcement.** Authorization requirements, disclaimers, and stricter review. They should never be the target of a first run of anything.
-- **Correlation ids are the hinge of the engagement half.** If `PublishResult` ids are not durably recorded, inbound comments cannot be tied back to what they are about, and the loop silently degrades into an undifferentiated feed. This deserves storage that outlives a pod.
-- **Silent success is the failure mode this codebase keeps producing.** The router reported delivery Synapse had rejected; Strimzi ignores a topic naming a cluster that does not exist; a watcher instance can fail every cycle and look healthy. A publisher that reports a post it did not make is the same bug with a worse blast radius. **Every publisher must verify its result and surface failure loudly.**
+- **A publish is irreversible in a way a site deploy is not.** A bad merge is fixed by another merge; a bad Facebook post has already reached feeds. Argues for `--dry-run` as the learning default and genuinely strict validation.
+- **Political campaign Pages carry extra Meta enforcement** — authorization requirements, disclaimers, stricter review. Never the target of a first run of anything.
+- **`ObjectRef` persistence is the hinge of the engagement half.** Lose it and inbound comments cannot be tied to what they are about.
+- **Silent success is the failure mode this codebase keeps producing.** The router reported delivery Synapse had rejected; Strimzi ignores a topic naming a cluster that does not exist; a watcher instance can fail every cycle and look healthy. **A publisher that reports a post it did not make is that bug with a worse blast radius.** Every publisher verifies its result and surfaces failure loudly.
+- **The capability table is a hypothesis.** Building against an unverified cell is how "Instagram accepts PNG" becomes a runtime discovery.
 
 ---
 
 ## Open questions
 
-1. **Where do `PublishResult` ids live?** Kafka is a log, not a lookup. Postgres via a DataService is the obvious answer and would be Knarr's second consumer of the shared cluster.
-2. **How much does `social.yml` overlap `flyers.conf`?** Both name assets in the same directory. Merging them is tempting and probably wrong — rendering and distribution are different concerns with different owners — but it deserves a deliberate answer rather than drift.
-3. **Does the Discord adapter go through the bridge or the API directly?** Via Matrix is nearly free given the bridge exists; directly is more control and another credential. Phase A should try the bridge first and record what it cannot express.
+1. **Where exactly does `ObjectRef` state live?** Postgres via a Mimir `DataService` is the presumption; schema and retention are unspecified.
+2. **How much does `social.yml` overlap `flyers.conf`?** Both name assets in the same directory. Merging them is tempting and probably wrong — rendering and distribution are different concerns with different owners — but deserves a deliberate answer.
+3. **Does the Discord adapter go through the Matrix bridge or the API directly?** Via the bridge is nearly free; directly is more control and another credential. Phase A should try the bridge first and record what it cannot express.
+4. **Is `surface` a field or part of `platform`?** Written here as a field so `facebook` stays one credential domain across two surfaces. If more platforms split this way, it may deserve to be part of the identifier.
