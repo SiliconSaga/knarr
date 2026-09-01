@@ -537,6 +537,43 @@ def test_validate_requires_github_repos():
     )
 
 
+VALID_PUBLISHER = {
+    "id": "mtl-matrix",
+    "platform": "matrix",
+    "surface": "room",
+    "access_path": "api",
+    "scope": "community/mtl",
+    "target": "#social-watch:knarr.local",
+}
+
+
+def test_parses_publishers_block():
+    cfg = {**VALID_INDEX, "publishers": [VALID_PUBLISHER]}
+    parsed = KnarrConfig.from_dict(cfg, community_loader=lambda _: VALID_COMMUNITY)
+    assert len(parsed.publishers) == 1
+    pub = parsed.publishers[0]
+    assert pub.id == "mtl-matrix"
+    assert pub.surface == "room"
+    assert pub.credentials_ref is None
+
+
+def test_publishers_defaults_to_empty():
+    parsed = KnarrConfig.from_dict(VALID_INDEX, community_loader=lambda _: VALID_COMMUNITY)
+    assert parsed.publishers == []
+
+
+def test_parse_rejects_non_list_publishers():
+    bad = {**VALID_INDEX, "publishers": "nope"}
+    with pytest.raises(ConfigError, match="publishers must be a list"):
+        KnarrConfig.from_dict(bad, community_loader=lambda _: VALID_COMMUNITY)
+
+
+def test_parse_rejects_publisher_missing_required_field():
+    bad = {**VALID_INDEX, "publishers": [{"id": "x", "platform": "matrix"}]}
+    with pytest.raises(ConfigError, match="missing required field"):
+        KnarrConfig.from_dict(bad, community_loader=lambda _: VALID_COMMUNITY)
+
+
 def test_parse_instance_rejects_non_string_scope():
     """Non-string scope is caught at parse time, not at validate_config."""
     bad = {
