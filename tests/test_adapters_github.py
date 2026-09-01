@@ -1,3 +1,4 @@
+import re
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -83,13 +84,14 @@ async def test_pullrequest_type_normalized():
 
 
 @pytest.mark.asyncio
-async def test_cursor_is_sent_as_since_and_boundary_rows_are_suppressed():
-    """The cursor drives GitHub's `since`, and inclusive boundary rows repeat.
+async def test_cursor_is_sent_as_since_with_overlap_and_seen_rows_suppressed():
+    """`since` is sent one second BEHIND the cursor, and repeats are dropped by id.
 
-    GitHub sorts /notifications by updated_at and treats `since` as
-    inclusive, so the row that set the cursor comes back on the next poll.
-    It must be suppressed by id — not by timestamp, which would also discard
-    a genuinely new notification sharing that second.
+    The overlap exists because GitHub documents `since` as "updated after this
+    time" — exclusive — which would drop every row sharing the cursor's
+    second, including one never seen. Re-reading that second and suppressing
+    by id is correct under either interpretation; suppressing by timestamp
+    instead would reintroduce exactly the loss the overlap prevents.
     """
     adapter = GitHubApiAdapter(
         instance_id="g", scope="community/x",
@@ -98,19 +100,31 @@ async def test_cursor_is_sent_as_since_and_boundary_rows_are_suppressed():
     captured_urls = []
 
     async def fake_get(url):
+        """Honour `since` the way the real endpoint does.
+
+        This matters: `_seen_ids` is deliberately bounded to the overlap
+        window rather than growing without limit, which is only safe because
+        the SERVER filters out everything older. A stub that ignored `since`
+        would make the adapter look broken for a reason production never has.
+        """
         captured_urls.append(url)
-        return _SAMPLE_NOTIFICATIONS
+        match = re.search(r"since=([^&]+)", url)
+        if not match:
+            return _SAMPLE_NOTIFICATIONS
+        since = match.group(1)
+        return [n for n in _SAMPLE_NOTIFICATIONS if n["updated_at"] > since]
 
     with patch.object(adapter, "_http_get", new=AsyncMock(side_effect=fake_get)):
         _, cursor = await adapter.fetch(None)
         assert cursor == "2026-05-31T11:55:00Z"
 
-        # Second poll: same feed replayed. The boundary row (1001) is the one
-        # that set the cursor, so it must not be re-emitted.
+        # Second poll: same feed replayed. Every row was already emitted, so
+        # nothing should come back out even though the overlap re-reads them.
         alerts, cursor2 = await adapter.fetch(cursor)
 
-    assert "since=2026-05-31T11:55:00Z" in captured_urls[1]
-    assert {a.event_id for a in alerts} == {"1002"}
+    # One second behind the cursor, not the cursor itself.
+    assert "since=2026-05-31T11:54:59Z" in captured_urls[1]
+    assert alerts == []
     assert cursor2 == "2026-05-31T11:55:00Z"
 
 

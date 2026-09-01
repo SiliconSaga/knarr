@@ -10,6 +10,7 @@ this adapter preserves the existing notifications-based behaviour.
 """
 
 import logging
+from datetime import UTC, datetime, timedelta
 
 import httpx
 
@@ -18,6 +19,31 @@ from src.watchers.schemas import Content, WatchAlert
 logger = logging.getLogger(__name__)
 
 _GITHUB_API = "https://api.github.com"
+_PER_PAGE = 50
+_MAX_PAGES = 5
+# Re-request one second before the cursor.
+#
+# GitHub documents `since` as "only show results updated after this time",
+# which reads as exclusive — and an exclusive filter drops EVERY row sharing
+# the cursor's second, including one we have never seen. Asking for a second
+# of history we have already read costs one comparison per row and removes
+# the guesswork about which semantics apply; _seen_ids suppresses the
+# duplicates it brings back.
+_OVERLAP_SECONDS = 1
+
+
+def _overlap(cursor: str | None) -> str | None:
+    """Shift an ISO-8601 cursor back by the overlap window."""
+    if not cursor:
+        return None
+    try:
+        parsed = datetime.fromisoformat(cursor.replace("Z", "+00:00"))
+    except ValueError:
+        # Not a timestamp we can shift — send it unchanged rather than
+        # dropping the filter entirely and re-reading the whole feed.
+        return cursor
+    shifted = parsed - timedelta(seconds=_OVERLAP_SECONDS)
+    return shifted.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class GitHubApiAdapter:
@@ -39,11 +65,12 @@ class GitHubApiAdapter:
         self.scope = scope
         self.repos = set(repos)
         self.token = token
-        # Ids seen at exactly the cursor timestamp on the previous fetch.
-        # GitHub's `since` is inclusive, so these come back every poll; this
-        # is the tie-breaker that suppresses them without discarding a
-        # genuinely new notification that shares their timestamp.
-        self._boundary_ids: set[str] = set()
+        # Ids already emitted from within the overlap window. The window is
+        # deliberately re-requested each poll (see _OVERLAP_SECONDS), so these
+        # come back every time; suppressing by ID is what lets the overlap be
+        # safe without re-emitting, AND what lets a genuinely new
+        # notification sharing that second still get through.
+        self._seen_ids: set[str] = set()
 
     async def _http_get_raw(self, url: str, headers: dict | None = None) -> list[dict]:
         """Indirection point so token-header tests can intercept."""
@@ -123,10 +150,31 @@ class GitHubApiAdapter:
         timestamp, which is what keeps two notifications sharing a
         millisecond from cancelling each other out.
         """
-        url = f"{_GITHUB_API}/notifications?participating=false&all=false"
-        if since_cursor:
-            url = f"{url}&since={since_cursor}"
-        notifications = await self._http_get(url)
+        since_param = _overlap(since_cursor)
+
+        notifications: list[dict] = []
+        for page in range(1, _MAX_PAGES + 1):
+            url = (
+                f"{_GITHUB_API}/notifications"
+                f"?participating=false&all=false"
+                f"&per_page={_PER_PAGE}&page={page}"
+            )
+            if since_param:
+                url = f"{url}&since={since_param}"
+            batch = await self._http_get(url)
+            notifications.extend(batch)
+            # A short page is the last page. Paginating at all matters for the
+            # same reason it did on Reddit: without it a busy interval loses
+            # everything past the first page, and a full page is
+            # indistinguishable from a complete one.
+            if len(batch) < _PER_PAGE:
+                break
+        else:
+            logger.warning(
+                "instance=%s stopped at the %d-page cap; older notifications "
+                "in this window were not fetched",
+                self.instance_id, _MAX_PAGES,
+            )
 
         alerts: list[WatchAlert] = []
         newest_seen: str | None = None
@@ -141,10 +189,11 @@ class GitHubApiAdapter:
             if updated_at and (newest_seen is None or updated_at > newest_seen):
                 newest_seen = updated_at
 
-            # Boundary rows: `since` is inclusive, so the row that set the
-            # previous cursor comes back. Skip it by identity.
-            if since_cursor is not None and updated_at == since_cursor \
-                    and notif_id in self._boundary_ids:
+            # Rows from the re-requested overlap window that we already
+            # emitted. Suppressed by ID, never by timestamp — a timestamp
+            # filter here would also discard an unseen notification that
+            # happens to share the second.
+            if notif_id in self._seen_ids:
                 continue
 
             repo_full = notif["repository"]["full_name"]
@@ -175,13 +224,15 @@ class GitHubApiAdapter:
 
         cursor = newest_seen if newest_seen is not None else since_cursor
 
-        # Remember which ids sat exactly on the new cursor, so the next poll
-        # can drop them when GitHub returns them again for an inclusive
-        # `since` — without dropping a new notification that happens to share
-        # the timestamp.
+        # Remember every id inside the window the next poll will re-request,
+        # so the overlap costs a set lookup rather than duplicate alerts.
+        # Bounded by the window, not by feed size, so it cannot grow without
+        # limit the way a full seen-set would.
         if cursor is not None:
-            self._boundary_ids = {
-                n["id"] for n in notifications if n.get("updated_at") == cursor
+            boundary = _overlap(cursor)
+            self._seen_ids = {
+                n["id"] for n in notifications
+                if boundary is None or (n.get("updated_at") or "") >= boundary
             }
 
         return alerts, cursor

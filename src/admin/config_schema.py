@@ -351,6 +351,50 @@ def validate_config(config: KnarrConfig) -> None:
                 f"Instance '{inst.id}': scope '{inst.scope}' must start with "
                 f"one of {_VALID_SCOPE_PREFIXES}"
             )
+
+        # Polling cadence. Unvalidated, a missing key silently fell back to a
+        # hardcoded default and a zero or negative value turned the poll loop
+        # into a busy-wait hammering the platform.
+        interval = inst.polling.get("interval_seconds")
+        if interval is None:
+            errors.append(
+                f"Instance '{inst.id}': polling.interval_seconds is required"
+            )
+        elif isinstance(interval, bool) or not isinstance(interval, int):
+            # bool is an int subclass; `interval_seconds: true` is a mistake.
+            errors.append(
+                f"Instance '{inst.id}': polling.interval_seconds must be an "
+                f"integer, got {type(interval).__name__}"
+            )
+        elif interval <= 0:
+            errors.append(
+                f"Instance '{inst.id}': polling.interval_seconds must be "
+                f"positive, got {interval}"
+            )
+
+        # Per-platform required config. These were read straight out of
+        # platform_config at adapter-build time, so a typo surfaced as a
+        # KeyError deep in startup rather than as a config error naming the
+        # instance.
+        if inst.platform == "reddit" and inst.access_path == "api":
+            subreddit = inst.platform_config.get("subreddit")
+            if not isinstance(subreddit, str) or not subreddit.strip():
+                errors.append(
+                    f"Instance '{inst.id}': reddit/api requires a non-empty "
+                    f"platform_config.subreddit"
+                )
+        if inst.platform == "github" and inst.access_path == "api":
+            repos = inst.platform_config.get("repos")
+            if not isinstance(repos, list) or not repos:
+                errors.append(
+                    f"Instance '{inst.id}': github/api requires a non-empty "
+                    f"platform_config.repos list"
+                )
+            elif not all(isinstance(r, str) and r.strip() for r in repos):
+                errors.append(
+                    f"Instance '{inst.id}': every platform_config.repos entry "
+                    f"must be a non-empty string"
+                )
         if inst.credentials_ref is not None:
             secret_name = inst.credentials_ref.get("secret_name")
             if secret_name is None or secret_name == "":

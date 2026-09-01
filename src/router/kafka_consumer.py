@@ -66,10 +66,18 @@ def format_alert_message(alert: WatchAlert) -> str:
     emoji = PLATFORM_EMOJI.get(alert.platform, "\U0001f514")
     platform = alert.platform.capitalize()
 
-    lines = [
-        f"{emoji} **{platform}** — {alert.instance_id}",
-        f"{alert.content.body}",
-    ]
+    lines = [f"{emoji} **{platform}** — {alert.instance_id}"]
+
+    # Title before body, and both optional.
+    #
+    # GitHub's /notifications payload carries no body at all — the title is
+    # the entire content. Rendering only the body therefore produced an empty
+    # message for every GitHub alert: a header, a blank line and a link, with
+    # no indication of what the notification was about.
+    if alert.content.title:
+        lines.append(alert.content.title)
+    if alert.content.body:
+        lines.append(alert.content.body)
     if alert.raw_post_ref:
         lines.append(f"\U0001f517 {alert.raw_post_ref}")
     return "\n".join(lines)
@@ -93,12 +101,15 @@ def format_alert_html(alert: WatchAlert) -> str:
     emoji = PLATFORM_EMOJI.get(alert.platform, "\U0001f514")
     platform = escape(alert.platform.capitalize())
     instance = escape(alert.instance_id)
-    body = escape(alert.content.body).replace("\n", "<br>")
 
-    parts = [
-        f"{emoji} <strong>{platform}</strong> — {instance}",
-        body,
-    ]
+    parts = [f"{emoji} <strong>{platform}</strong> — {instance}"]
+
+    # Same title-then-body rule as the plain formatter — a GitHub alert has
+    # no body, so omitting the title renders an empty message.
+    if alert.content.title:
+        parts.append(escape(alert.content.title).replace("\n", "<br>"))
+    if alert.content.body:
+        parts.append(escape(alert.content.body).replace("\n", "<br>"))
     if alert.raw_post_ref:
         # Escaped in both the href and the text: a crafted ref must not be
         # able to close the attribute and open another.

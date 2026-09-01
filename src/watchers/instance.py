@@ -7,6 +7,7 @@ architecture for the model.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import TYPE_CHECKING, Any
@@ -18,6 +19,11 @@ if TYPE_CHECKING:
     from confluent_kafka import Producer
 
 logger = logging.getLogger(__name__)
+
+# How long librdkafka is given to drain the queue. Finite so a wedged broker
+# surfaces as "cursor held, will retry" rather than an instance that never
+# returns from a poll.
+_FLUSH_TIMEOUT_SECONDS = 30
 
 
 class WatcherInstance:
@@ -93,7 +99,24 @@ class WatcherInstance:
             self.producer.flush()
             return 0
 
-        remaining = self.producer.flush()
+        # flush() is a blocking librdkafka call. Awaiting it on a worker
+        # thread matters because every instance shares one event loop: a
+        # broker that has gone slow would otherwise stall every OTHER
+        # instance's poll for the duration, turning one degraded platform
+        # into a stalled watcher. The timeout bounds that further — a flush
+        # that never returns must not park the loop forever.
+        try:
+            remaining = await asyncio.wait_for(
+                asyncio.to_thread(self.producer.flush, _FLUSH_TIMEOUT_SECONDS),
+                timeout=_FLUSH_TIMEOUT_SECONDS + 5,
+            )
+        except TimeoutError:
+            logger.error(
+                "instance=%s flush did not return within %ss; keeping cursor "
+                "at %s so the next poll retries",
+                self.config.id, _FLUSH_TIMEOUT_SECONDS + 5, self._cursor,
+            )
+            return 0
 
         if remaining or failures:
             logger.error(

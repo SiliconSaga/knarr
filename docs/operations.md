@@ -119,7 +119,7 @@ The startup line names every instance it built (`watcher started — 2 instance(
 
 | Env Var | Default | Used by | Description |
 |---------|---------|---------|-------------|
-| `KNARR_CONFIG_PATH` | `/etc/knarr/knarr.yaml` | Watchers | Config carrying the `instances:` list |
+| `KNARR_CONFIG_PATH` | `/etc/knarr/knarr.yaml` | Watchers | Config carrying the `instances:` list. The default matches the filename the ConfigMap mounts, so an unset value still finds the file |
 | `GITHUB_TOKEN` | *(none)* | Watchers | Named by an instance's `credentials_ref.secret_key`. **Required if referenced** — the runner fails fast rather than degrading to anonymous calls, so a broken `secretKeyRef` surfaces immediately instead of looking like a quiet source |
 | `KAFKA_BOOTSTRAP` | *(required)* | Both | Kafka bootstrap servers |
 | `MATRIX_HOMESERVER` | *(required)* | Router | Synapse URL |

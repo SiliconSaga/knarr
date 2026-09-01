@@ -446,6 +446,80 @@ def test_validate_rejects_instance_with_unknown_scope_type():
         validate_config(config)
 
 
+def _instance(**overrides):
+    """A minimal valid reddit/api instance, with fields overridable."""
+    base = {
+        "id": "inst",
+        "platform": "reddit",
+        "access_path": "api",
+        "scope": "community/terasology",
+        "polling": {"interval_seconds": 100},
+        "platform_config": {"subreddit": "Terasology"},
+        "target_room": "social-watch",
+    }
+    base.update(overrides)
+    return {**VALID_INDEX, "instances": [base]}
+
+
+def _expect_config_error(payload, match):
+    config = KnarrConfig.from_dict(payload, community_loader=lambda _: VALID_COMMUNITY)
+    with pytest.raises(ConfigError, match=match):
+        validate_config(config)
+
+
+def test_validate_requires_polling_interval():
+    """A missing interval used to fall back to a hardcoded default silently."""
+    _expect_config_error(
+        _instance(polling={}), "interval_seconds is required",
+    )
+
+
+def test_validate_rejects_non_positive_polling_interval():
+    """Zero or negative turns the poll loop into a busy-wait on the platform."""
+    _expect_config_error(
+        _instance(polling={"interval_seconds": 0}), "must be positive",
+    )
+    _expect_config_error(
+        _instance(polling={"interval_seconds": -5}), "must be positive",
+    )
+
+
+def test_validate_rejects_non_integer_polling_interval():
+    """bool is an int subclass, so `interval_seconds: true` needs catching."""
+    _expect_config_error(
+        _instance(polling={"interval_seconds": "600"}), "must be an integer",
+    )
+    _expect_config_error(
+        _instance(polling={"interval_seconds": True}), "must be an integer",
+    )
+
+
+def test_validate_requires_reddit_subreddit():
+    """Previously a KeyError deep in adapter construction, naming nothing."""
+    _expect_config_error(
+        _instance(platform_config={}), "non-empty platform_config.subreddit",
+    )
+    _expect_config_error(
+        _instance(platform_config={"subreddit": "   "}),
+        "non-empty platform_config.subreddit",
+    )
+
+
+def test_validate_requires_github_repos():
+    _expect_config_error(
+        _instance(platform="github", platform_config={}),
+        "non-empty platform_config.repos",
+    )
+    _expect_config_error(
+        _instance(platform="github", platform_config={"repos": []}),
+        "non-empty platform_config.repos",
+    )
+    _expect_config_error(
+        _instance(platform="github", platform_config={"repos": ["ok", ""]}),
+        "must be a non-empty string",
+    )
+
+
 def test_parse_instance_rejects_non_string_scope():
     """Non-string scope is caught at parse time, not at validate_config."""
     bad = {

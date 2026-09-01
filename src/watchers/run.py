@@ -134,7 +134,11 @@ async def _poll_loop(instance: WatcherInstance, stop_event: asyncio.Event):
 async def main():
     kafka_bootstrap = os.environ["KAFKA_BOOTSTRAP"]
     kafka_topic = os.environ.get("KAFKA_TOPIC", "knarr.watch.alerts")
-    config_path = os.environ.get("KNARR_CONFIG_PATH", "/etc/knarr/config.yaml")
+    # Default matches the filename the ConfigMap actually mounts (and the one
+    # in config/). The old `config.yaml` default named a file that exists
+    # nowhere, so an unset env var failed with "no such file" rather than
+    # working.
+    config_path = os.environ.get("KNARR_CONFIG_PATH", "/etc/knarr/knarr.yaml")
 
     producer = Producer({"bootstrap.servers": kafka_bootstrap})
     instances = build_instances(config_path, producer, kafka_topic)

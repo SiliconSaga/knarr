@@ -124,3 +124,24 @@ def test_format_github_alert_uses_emoji_header_and_instance_id():
     assert "Github" in msg
     assert "github-terasology" in msg
     assert "https://github.com/MovingBlocks/Terasology/issues/42" in msg
+
+
+def test_github_alert_renders_its_title():
+    """GitHub's /notifications payload has no body — the title IS the content.
+
+    Rendering only the body produced a header, a blank line and a link, with
+    no indication of what the notification was about.
+    """
+    alert = _github_alert()
+    assert alert.content.body == "", "fixture must keep the empty-body shape"
+
+    assert "Some bug" in format_alert_message(alert)
+    assert "Some bug" in format_alert_html(alert)
+
+
+def test_title_is_escaped_in_html():
+    alert = _github_alert()
+    alert.content.title = "<b>not bold</b>"
+    html = format_alert_html(alert)
+    assert "<b>not bold</b>" not in html
+    assert "&lt;b&gt;" in html

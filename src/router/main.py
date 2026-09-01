@@ -41,22 +41,48 @@ async def _send_with_retry(client, room_id: str, alert):
 
     None means every attempt failed — the caller must NOT commit the offset.
     """
+    formatted = format_alert_message(alert)
+    formatted_html = format_alert_html(alert)
+
+    # ONE transaction id for every attempt, derived from the alert so it is
+    # stable across process restarts too.
+    #
+    # Retrying without this is how a retry becomes a double post: a send that
+    # timed out may well have succeeded server-side, and a fresh txn id makes
+    # the retry a brand-new event. Matrix deduplicates by transaction id, so
+    # reusing it turns "did that land?" into an idempotent question.
+    tx_id = f"knarr-{alert.instance_id}-{alert.event_id}"
+
     for attempt in range(1, _SEND_ATTEMPTS + 1):
-        formatted = format_alert_message(alert)
-        send = await client.room_send(
-            room_id,
-            message_type="m.room.message",
-            content={
-                "msgtype": "m.text",
-                "body": formatted,
-                # Escaped separately rather than derived from the plain text.
-                # Alert bodies are attacker-controlled (Reddit, GitHub), and
-                # the old `.replace("\n", "<br>")` put them into an HTML field
-                # unescaped.
-                "format": "org.matrix.custom.html",
-                "formatted_body": format_alert_html(alert),
-            },
-        )
+        try:
+            send = await client.room_send(
+                room_id,
+                message_type="m.room.message",
+                content={
+                    "msgtype": "m.text",
+                    "body": formatted,
+                    # Escaped separately rather than derived from the plain
+                    # text. Alert bodies are attacker-controlled (Reddit,
+                    # GitHub), and the old `.replace("\n", "<br>")` put them
+                    # into an HTML field unescaped.
+                    "format": "org.matrix.custom.html",
+                    "formatted_body": formatted_html,
+                },
+                tx_id=tx_id,
+            )
+        except Exception as exc:  # noqa: BLE001 — transport errors are varied
+            # nio returns protocol errors but RAISES transport ones. An
+            # uncaught connection reset here would escape the loop and take
+            # the consumer down, which is the failure this retry exists to
+            # absorb.
+            logger.warning(
+                "Transport error sending alert %s (attempt %d/%d): %s: %s",
+                alert.event_id, attempt, _SEND_ATTEMPTS,
+                type(exc).__name__, exc,
+            )
+            if attempt < _SEND_ATTEMPTS:
+                await asyncio.sleep(_SEND_BACKOFF_SECONDS * attempt)
+            continue
         # nio RETURNS errors rather than raising them, so an unchecked
         # room_send logs a success that never happened. This bit us for real:
         # the router reported "Posted alert" for every message while Synapse
