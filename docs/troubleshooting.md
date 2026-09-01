@@ -28,7 +28,9 @@ otherwise unaffected and still produces Reddit alerts.
 
 ## Kafka topics exist as objects but never become Ready
 
-**Symptom:** `kubectl apply` reports success and `kubectl get kafkatopic -n kafka` lists the topics — but they never reach `Ready=True`, and nothing exists on the broker. Producing to one creates a *different*, auto-created topic, or fails, depending on broker config.
+**Symptom:** `kubectl apply` reports success and `kubectl get kafkatopic -n kafka` lists the topics — but they never reach `Ready=True`, and no matching topic exists on the broker.
+
+What happens when a producer then writes to that name depends on the broker's `auto.create.topics.enable`. With auto-creation **on**, the broker creates a topic of the *same name* using its own defaults — so the partition count, replication factor and retention from the `KafkaTopic` spec are all silently ignored, and you end up with a working-looking topic that is not the one you declared. With auto-creation **off**, the produce simply fails. The first case is the dangerous one, because nothing looks broken until the settings matter.
 
 **The trap:** Strimzi **silently ignores** a `KafkaTopic` whose `strimzi.io/cluster` label names a cluster that does not exist. The Kubernetes object is accepted and stored — so it looks present — but no operator claims it, so it gets no status and no broker-side topic. There is no event and no error anywhere. **The object existing is exactly what makes this hard to spot; "it's in `kubectl get`" is not evidence it works.** Check the READY column, not the presence of a row.
 
