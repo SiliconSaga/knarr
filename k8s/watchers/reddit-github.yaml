@@ -21,7 +21,7 @@ spec:
           imagePullPolicy: Never
           env:
             - name: KAFKA_BOOTSTRAP
-              value: "knarr-kafka-8r9tn-kafka-bootstrap.kafka.svc.cluster.local:9092"
+              value: "knarr-kafka-kafka-bootstrap.kafka.svc:9092"
             - name: KAFKA_TOPIC
               value: "knarr.watch.alerts"
             - name: REDDIT_SUBREDDIT

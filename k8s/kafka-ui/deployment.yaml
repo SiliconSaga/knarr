@@ -23,8 +23,11 @@ spec:
           env:
             - name: KAFKA_CLUSTERS_0_NAME
               value: "knarr"
+            # Stable since mimir#18 — Strimzi resources are named after the
+            # claim, so this no longer changes on every cluster rebuild. The
+            # authoritative value is the claim's status.bootstrapServers.
             - name: KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS
-              value: "knarr-kafka-8r9tn-kafka-bootstrap.kafka.svc.cluster.local:9092"
+              value: "knarr-kafka-kafka-bootstrap.kafka.svc:9092"
           resources:
             requests:
               cpu: 50m

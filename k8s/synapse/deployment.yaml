@@ -15,6 +15,51 @@ spec:
       labels:
         app: synapse
     spec:
+      initContainers:
+        # Renders homeserver.yaml from the ConfigMap template plus the
+        # credentials the Mimir DataService operator published. Synapse has no
+        # env-var substitution of its own, so the choice is this or a password
+        # committed to git — which is what this replaces.
+        #
+        # sed is safe here: the operator generates passwords over the base64url
+        # alphabet (A-Za-z0-9-_), so there are no metacharacters and no
+        # collision with the `|` delimiter.
+        - name: render-config
+          image: busybox:1.37
+          env:
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef: { name: synapse-dataservice, key: username }
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: synapse-dataservice, key: password }
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef: { name: synapse-dataservice, key: database }
+            - name: DB_HOST
+              valueFrom:
+                secretKeyRef: { name: synapse-dataservice, key: host }
+            - name: DB_PORT
+              valueFrom:
+                secretKeyRef: { name: synapse-dataservice, key: port }
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              sed -e "s|__DB_USER__|$DB_USER|" \
+                  -e "s|__DB_PASSWORD__|$DB_PASSWORD|" \
+                  -e "s|__DB_NAME__|$DB_NAME|" \
+                  -e "s|__DB_HOST__|$DB_HOST|" \
+                  -e "s|__DB_PORT__|$DB_PORT|" \
+                  /tmpl/homeserver.yaml.tmpl > /config/homeserver.yaml
+              cp /tmpl/log.yaml /config/log.yaml
+              echo "rendered homeserver.yaml for $DB_USER@$DB_HOST:$DB_PORT/$DB_NAME"
+          volumeMounts:
+            - name: config-tmpl
+              mountPath: /tmpl
+            - name: config
+              mountPath: /config
       containers:
         - name: synapse
           image: matrixdotorg/synapse:v1.122.0
@@ -55,9 +100,13 @@ spec:
             initialDelaySeconds: 30
             periodSeconds: 30
       volumes:
-        - name: config
+        # The template as committed, and the rendered result the initContainer
+        # writes. Only the latter is mounted at /config for Synapse.
+        - name: config-tmpl
           configMap:
             name: synapse-config
+        - name: config
+          emptyDir: {}
         - name: signing-key
           secret:
             secretName: synapse-signing-key

@@ -26,20 +26,27 @@ otherwise unaffected and still produces Reddit alerts.
 **Fix:** create a fine-grained PAT, add it to `knarr.env` as
 `GITHUB_TOKEN`, restart the watcher Deployment.
 
-## Kafka cluster name mismatch
+## Kafka topics exist as objects but never become Ready
 
-**Symptom:** `kafka-topics.yaml` apply fails with a "no such cluster"
-error from Strimzi, or topics never reach `Ready=True`.
+**Symptom:** `kubectl apply` reports success and `kubectl get kafkatopic -n kafka` lists the topics — but they never reach `Ready=True`, and no matching topic exists on the broker.
 
-**Cause:** the Crossplane `xkafkacluster-strimzi` composition generates
-a random suffix on the cluster name (e.g. `knarr-kafka-8r9tn`). The
-`strimzi.io/cluster` label in `kafka-topics.yaml` has to match the
-actual cluster name.
+What happens when a producer then writes to that name depends on the broker's `auto.create.topics.enable`. With auto-creation **on**, the broker creates a topic of the *same name* using its own defaults — so the partition count, replication factor and retention from the `KafkaTopic` spec are all silently ignored, and you end up with a working-looking topic that is not the one you declared. With auto-creation **off**, the produce simply fails. The first case is the dangerous one, because nothing looks broken until the settings matter.
 
-**Fix:** look up the actual name and update the label:
+**The trap:** Strimzi **silently ignores** a `KafkaTopic` whose `strimzi.io/cluster` label names a cluster that does not exist. The Kubernetes object is accepted and stored — so it looks present — but no operator claims it, so it gets no status and no broker-side topic. There is no event and no error anywhere. **The object existing is exactly what makes this hard to spot; "it's in `kubectl get`" is not evidence it works.** Check the READY column, not the presence of a row.
+
+**Historical cause (fixed 2026-08-28, mimir#18):** the `xkafkacluster-strimzi` composition used to name the cluster after the Crossplane *composite*, which carries a random suffix (`knarr-kafka-8r9tn`, then `knarr-kafka-2wjjq` after a rebuild). Every committed reference went stale on each teardown. Knarr's six topics were inert for two months for exactly this reason.
+
+The composition now names Strimzi resources after the **claim**, so the cluster is deterministically `knarr-kafka` and the committed labels stay correct across rebuilds.
+
+**If you still see a mismatch,** compare the label against the live cluster:
 
 ```bash
-kubectl get kafka -n kafka   # note the NAME
-# then edit k8s/kafka-topics.yaml's strimzi.io/cluster label to match
-kubectl apply -f k8s/kafka-topics.yaml
+kubectl get kafka -n kafka
+kubectl get kafkatopic -n kafka
+```
+
+The authoritative bootstrap address is published on the claim — read it rather than assembling one:
+
+```bash
+kubectl get kafkacluster knarr-kafka -n knarr -o jsonpath='{.status.bootstrapServers}'
 ```
