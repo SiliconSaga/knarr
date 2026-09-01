@@ -15,6 +15,10 @@ logger = logging.getLogger(__name__)
 
 _REDDIT_BASE = "https://www.reddit.com"
 _USER_AGENT = "knarr-watcher/0.2 (by u/Cervator)"
+_PAGE_LIMIT = 25
+# Bounds the backfill when the cursor is not found — a deleted post or a long
+# outage must not turn one poll into an unbounded crawl of the subreddit.
+_MAX_PAGES = 4
 
 
 class RedditApiAdapter:
@@ -43,9 +47,47 @@ class RedditApiAdapter:
     async def fetch(
         self, since_cursor: str | None
     ) -> tuple[list[WatchAlert], str | None]:
-        url = f"{_REDDIT_BASE}/r/{self.subreddit}/new.json?limit=10"
-        payload = await self._http_get(url)
-        posts = payload["data"]["children"]
+        """Walk /new backwards until the previous tip, then stop.
+
+        Paginated because a single page is not a safety net. With a fixed
+        `limit` and no paging, a subreddit that produced more posts than the
+        page size between two polls loses everything past the first page —
+        silently, because the adapter cannot tell a full page from a
+        complete one. The `after` token is how you tell.
+
+        `_MAX_PAGES` bounds the walk so a cursor that no longer appears in
+        the listing (deleted post, very long gap) degrades into "fetch a
+        bounded backlog" rather than paging the entire subreddit.
+        """
+        posts: list[dict] = []
+        after: str | None = None
+        found_cursor = False
+
+        for _ in range(_MAX_PAGES):
+            url = f"{_REDDIT_BASE}/r/{self.subreddit}/new.json?limit={_PAGE_LIMIT}"
+            if after:
+                url = f"{url}&after={after}"
+            payload = await self._http_get(url)
+            data = payload["data"]
+            children = data.get("children", [])
+            posts.extend(children)
+
+            if since_cursor is not None and any(
+                c["data"]["name"] == since_cursor for c in children
+            ):
+                found_cursor = True
+                break
+
+            after = data.get("after")
+            if not after or not children:
+                break  # listing exhausted
+
+        if since_cursor is not None and not found_cursor and posts:
+            logger.warning(
+                "instance=%s cursor %s not found within %d page(s); emitting a "
+                "bounded backlog rather than paging further",
+                self.instance_id, since_cursor, _MAX_PAGES,
+            )
 
         alerts: list[WatchAlert] = []
         newest_seen: str | None = None

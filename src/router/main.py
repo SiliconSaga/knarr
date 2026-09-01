@@ -20,10 +20,61 @@ import signal
 from confluent_kafka import Consumer, KafkaError
 from nio import AsyncClient, JoinResponse, LoginResponse, RoomSendResponse
 
-from .kafka_consumer import deserialize_alert, format_alert_message
+from .kafka_consumer import (
+    deserialize_alert,
+    format_alert_html,
+    format_alert_message,
+)
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
+
+# Bounded retry for transient Matrix failures. Small and finite on purpose:
+# the offset is not committed until a send is confirmed, so exhausting these
+# stops the loop and the alert is retried on restart rather than lost.
+_SEND_ATTEMPTS = 3
+_SEND_BACKOFF_SECONDS = 2.0
+
+
+async def _send_with_retry(client, room_id: str, alert):
+    """Post one alert, retrying transient failures. Returns the response or None.
+
+    None means every attempt failed — the caller must NOT commit the offset.
+    """
+    for attempt in range(1, _SEND_ATTEMPTS + 1):
+        formatted = format_alert_message(alert)
+        send = await client.room_send(
+            room_id,
+            message_type="m.room.message",
+            content={
+                "msgtype": "m.text",
+                "body": formatted,
+                # Escaped separately rather than derived from the plain text.
+                # Alert bodies are attacker-controlled (Reddit, GitHub), and
+                # the old `.replace("\n", "<br>")` put them into an HTML field
+                # unescaped.
+                "format": "org.matrix.custom.html",
+                "formatted_body": format_alert_html(alert),
+            },
+        )
+        # nio RETURNS errors rather than raising them, so an unchecked
+        # room_send logs a success that never happened. This bit us for real:
+        # the router reported "Posted alert" for every message while Synapse
+        # rejected all of them, because the bot had been invited to the room
+        # but never joined. A router that lies about delivery is worse than
+        # one that crashes.
+        if isinstance(send, RoomSendResponse):
+            return send
+
+        logger.warning(
+            "Matrix REJECTED alert %s from %s/%s (attempt %d/%d): %s",
+            alert.event_id, alert.platform, alert.instance_id,
+            attempt, _SEND_ATTEMPTS, send,
+        )
+        if attempt < _SEND_ATTEMPTS:
+            await asyncio.sleep(_SEND_BACKOFF_SECONDS * attempt)
+
+    return None
 
 
 async def main():
@@ -58,11 +109,17 @@ async def main():
         return
     logger.info("Joined %s", room_id)
 
-    # Set up Kafka consumer
+    # Set up Kafka consumer.
+    #
+    # enable.auto.commit is OFF deliberately. With the default on, the offset
+    # advances on a timer regardless of whether the alert was delivered — so a
+    # send Matrix rejected was logged and then permanently skipped. Committing
+    # only after a confirmed send is what makes the log line and reality agree.
     consumer = Consumer({
         "bootstrap.servers": kafka_bootstrap,
         "group.id": "knarr-router",
         "auto.offset.reset": "latest",
+        "enable.auto.commit": False,
     })
     consumer.subscribe([kafka_topic])
 
@@ -90,31 +147,24 @@ async def main():
 
             alert = deserialize_alert(msg.value())
             if alert is None:
+                # Undecodable payload. It will never decode, so retrying it
+                # forever would wedge the partition — commit past it.
+                consumer.commit(message=msg, asynchronous=False)
                 continue
 
-            formatted = format_alert_message(alert)
-            send = await client.room_send(
-                room_id,
-                message_type="m.room.message",
-                content={
-                    "msgtype": "m.text",
-                    "body": formatted,
-                    "format": "org.matrix.custom.html",
-                    "formatted_body": formatted.replace("\n", "<br>"),
-                },
-            )
-            # nio RETURNS errors rather than raising them, so an unchecked
-            # room_send logs a success that never happened. This bit us for
-            # real: the router reported "Posted alert" for every message while
-            # Synapse rejected all of them, because the bot had been invited to
-            # the room but never joined. A router that lies about delivery is
-            # worse than one that crashes.
-            if not isinstance(send, RoomSendResponse):
-                logger.error(
-                    "Matrix REJECTED alert %s from %s/%s: %s",
-                    alert.event_id, alert.platform, alert.instance_id, send,
+            send = await _send_with_retry(client, room_id, alert)
+
+            if send is None:
+                logger.critical(
+                    "Giving up on alert %s from %s/%s after %d attempts. NOT "
+                    "committing the offset — this alert is retried on restart "
+                    "rather than dropped. Fix the Matrix side.",
+                    alert.event_id, alert.platform, alert.instance_id,
+                    _SEND_ATTEMPTS,
                 )
-                continue
+                break
+
+            consumer.commit(message=msg, asynchronous=False)
             logger.info(
                 "Posted alert from %s/%s (event %s)",
                 alert.platform, alert.instance_id, send.event_id,

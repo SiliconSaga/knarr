@@ -39,6 +39,11 @@ class GitHubApiAdapter:
         self.scope = scope
         self.repos = set(repos)
         self.token = token
+        # Ids seen at exactly the cursor timestamp on the previous fetch.
+        # GitHub's `since` is inclusive, so these come back every poll; this
+        # is the tie-breaker that suppresses them without discarding a
+        # genuinely new notification that shares their timestamp.
+        self._boundary_ids: set[str] = set()
 
     async def _http_get_raw(self, url: str, headers: dict | None = None) -> list[dict]:
         """Indirection point so token-header tests can intercept."""
@@ -67,16 +72,60 @@ class GitHubApiAdapter:
         return mapping.get(github_subject_type, github_subject_type.lower())
 
     @staticmethod
-    def _api_url_to_web_url(api_url: str) -> str:
-        """Convert api.github.com/repos/o/r/pulls/N -> github.com/o/r/pull/N."""
-        return (api_url
-                .replace("api.github.com/repos/", "github.com/")
-                .replace("/pulls/", "/pull/"))
+    def _api_url_to_web_url(notif: dict) -> str:
+        """Best web URL for a notification, per subject type.
+
+        A blanket string rewrite of `subject.url` is wrong for two types and
+        produces links that 404:
+
+        - **Commit** — the API path is `/commits/<sha>` but the web path is
+          the singular `/commit/<sha>`.
+        - **Release** — `subject.url` ends in the release's numeric API id,
+          which does not appear in any web URL at all. There is no rewrite
+          that recovers the tag, so prefer `latest_comment_url` when GitHub
+          supplies it and otherwise fall back to the repo's releases page,
+          which is at least a real destination.
+        """
+        subject = notif.get("subject", {})
+        subject_type = subject.get("type", "")
+        api_url = subject.get("url", "") or ""
+
+        def to_web(u: str) -> str:
+            return (u
+                    .replace("api.github.com/repos/", "github.com/")
+                    .replace("/pulls/", "/pull/")
+                    .replace("/commits/", "/commit/"))
+
+        if subject_type == "Release":
+            latest = subject.get("latest_comment_url") or ""
+            if latest:
+                return to_web(latest)
+            repo_url = notif.get("repository", {}).get("html_url", "")
+            return f"{repo_url}/releases" if repo_url else ""
+
+        return to_web(api_url) if api_url else ""
 
     async def fetch(
         self, since_cursor: str | None
     ) -> tuple[list[WatchAlert], str | None]:
+        """Poll /notifications, filtered by repo, since the last timestamp.
+
+        The cursor is an `updated_at` TIMESTAMP, not a notification id. Ids
+        are not ordered — GitHub sorts this feed by `updated_at` — so an id
+        cursor could only ever be matched by scanning for it, and a
+        notification that aged out of the feed made the cursor unmatchable
+        and the whole feed look new. A timestamp also feeds `since`, so the
+        server does the filtering instead of the client.
+
+        `since` is EXCLUSIVE in effect for our purposes but GitHub treats it
+        as inclusive, so rows exactly at the boundary come back again; they
+        are dropped by id against the previous batch rather than by
+        timestamp, which is what keeps two notifications sharing a
+        millisecond from cancelling each other out.
+        """
         url = f"{_GITHUB_API}/notifications?participating=false&all=false"
+        if since_cursor:
+            url = f"{url}&since={since_cursor}"
         notifications = await self._http_get(url)
 
         alerts: list[WatchAlert] = []
@@ -84,11 +133,19 @@ class GitHubApiAdapter:
 
         for notif in notifications:
             notif_id = notif["id"]
-            if newest_seen is None:
-                newest_seen = notif_id
+            updated_at = notif.get("updated_at")
 
-            if since_cursor is not None and notif_id == since_cursor:
-                break
+            # Track the newest timestamp across ALL rows, not just matched
+            # ones — the cursor describes how far the feed was read, which is
+            # independent of which repos we care about.
+            if updated_at and (newest_seen is None or updated_at > newest_seen):
+                newest_seen = updated_at
+
+            # Boundary rows: `since` is inclusive, so the row that set the
+            # previous cursor comes back. Skip it by identity.
+            if since_cursor is not None and updated_at == since_cursor \
+                    and notif_id in self._boundary_ids:
+                continue
 
             repo_full = notif["repository"]["full_name"]
             if repo_full not in self.repos:
@@ -97,8 +154,7 @@ class GitHubApiAdapter:
             subject = notif["subject"]
             subject_type = subject["type"]
             title = subject["title"]
-            api_url = subject.get("url", "")
-            web_url = self._api_url_to_web_url(api_url) if api_url else ""
+            web_url = self._api_url_to_web_url(notif)
 
             alerts.append(WatchAlert(
                 event_id=notif_id,
@@ -118,4 +174,14 @@ class GitHubApiAdapter:
             ))
 
         cursor = newest_seen if newest_seen is not None else since_cursor
+
+        # Remember which ids sat exactly on the new cursor, so the next poll
+        # can drop them when GitHub returns them again for an inclusive
+        # `since` — without dropping a new notification that happens to share
+        # the timestamp.
+        if cursor is not None:
+            self._boundary_ids = {
+                n["id"] for n in notifications if n.get("updated_at") == cursor
+            }
+
         return alerts, cursor

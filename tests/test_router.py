@@ -1,4 +1,8 @@
-from src.router.kafka_consumer import deserialize_alert, format_alert_message
+from src.router.kafka_consumer import (
+    deserialize_alert,
+    format_alert_html,
+    format_alert_message,
+)
 from src.watchers.schemas import Attachment, Content, WatchAlert
 
 
@@ -55,6 +59,56 @@ def test_deserialize_round_trips_new_envelope_from_bytes():
 def test_deserialize_alert_returns_none_on_malformed_bytes():
     """Survives one bad event without crashing the consumer loop."""
     assert deserialize_alert(b"not json") is None
+
+
+def test_deserialize_alert_survives_invalid_utf8():
+    """Invalid UTF-8 raises UnicodeDecodeError, which is not a JSONDecodeError.
+
+    The original narrower catch let this through and it would have killed the
+    consumer loop on a single corrupt record.
+    """
+    assert deserialize_alert(b"\xff\xfe\xfd") is None
+
+
+def test_deserialize_alert_survives_valid_json_of_the_wrong_shape():
+    """b"[]" decodes cleanly, then subscripting a list raises TypeError."""
+    assert deserialize_alert(b"[]") is None
+    assert deserialize_alert(b'"a string"') is None
+    assert deserialize_alert(b"42") is None
+
+
+def test_html_body_escapes_untrusted_content():
+    """Alert bodies come from Reddit and GitHub — they are not trusted markup.
+
+    formatted_body used to be derived from the plain text by replacing
+    newlines, which put attacker-controlled HTML straight into the field
+    Matrix clients render as markup.
+    """
+    alert = _reddit_alert()
+    alert.content.body = '<img src=x onerror="alert(1)">'
+    html = format_alert_html(alert)
+
+    assert "<img" not in html
+    assert "&lt;img" in html
+    assert "onerror=" not in html or "&quot;" in html
+    # The tags this function adds itself are still real markup.
+    assert "<strong>" in html
+
+
+def test_html_body_escapes_a_crafted_link_ref():
+    alert = _reddit_alert()
+    alert.raw_post_ref = 'https://x/"><script>bad()</script>'
+    html = format_alert_html(alert)
+
+    assert "<script>" not in html
+    assert "&lt;script&gt;" in html
+
+
+def test_plain_body_is_not_html_escaped():
+    """`body` is the plain-text field — escaping it would show entities."""
+    alert = _reddit_alert()
+    alert.content.body = "5 > 3 & rising"
+    assert "5 > 3 & rising" in format_alert_message(alert)
 
 
 def test_format_reddit_alert_uses_emoji_header_and_full_body():

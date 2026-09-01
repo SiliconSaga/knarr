@@ -52,7 +52,10 @@ async def test_first_fetch_returns_filtered_alerts():
 
     assert len(alerts) == 2
     assert {a.event_id for a in alerts} == {"1001", "1002"}
-    assert cursor == "1001"
+    # The cursor is the newest updated_at across ALL rows — including the
+    # off-topic one, because it describes how far the feed was read rather
+    # than which rows we kept.
+    assert cursor == "2026-05-31T11:55:00Z"
 
     issue = next(a for a in alerts if a.event_id == "1001")
     assert issue.platform == "github"
@@ -80,17 +83,113 @@ async def test_pullrequest_type_normalized():
 
 
 @pytest.mark.asyncio
-async def test_cursor_filter_excludes_seen():
+async def test_cursor_is_sent_as_since_and_boundary_rows_are_suppressed():
+    """The cursor drives GitHub's `since`, and inclusive boundary rows repeat.
+
+    GitHub sorts /notifications by updated_at and treats `since` as
+    inclusive, so the row that set the cursor comes back on the next poll.
+    It must be suppressed by id — not by timestamp, which would also discard
+    a genuinely new notification sharing that second.
+    """
+    adapter = GitHubApiAdapter(
+        instance_id="g", scope="community/x",
+        repos=["MovingBlocks/Terasology"], token=None,
+    )
+    captured_urls = []
+
+    async def fake_get(url):
+        captured_urls.append(url)
+        return _SAMPLE_NOTIFICATIONS
+
+    with patch.object(adapter, "_http_get", new=AsyncMock(side_effect=fake_get)):
+        _, cursor = await adapter.fetch(None)
+        assert cursor == "2026-05-31T11:55:00Z"
+
+        # Second poll: same feed replayed. The boundary row (1001) is the one
+        # that set the cursor, so it must not be re-emitted.
+        alerts, cursor2 = await adapter.fetch(cursor)
+
+    assert "since=2026-05-31T11:55:00Z" in captured_urls[1]
+    assert {a.event_id for a in alerts} == {"1002"}
+    assert cursor2 == "2026-05-31T11:55:00Z"
+
+
+@pytest.mark.asyncio
+async def test_new_row_sharing_the_boundary_timestamp_is_not_dropped():
+    """A tie on the cursor timestamp must not swallow an unseen notification."""
     adapter = GitHubApiAdapter(
         instance_id="g", scope="community/x",
         repos=["MovingBlocks/Terasology"], token=None,
     )
     with patch.object(adapter, "_http_get",
                       new=AsyncMock(return_value=_SAMPLE_NOTIFICATIONS)):
-        alerts, cursor = await adapter.fetch("1001")
+        _, cursor = await adapter.fetch(None)
 
-    assert alerts == []
-    assert cursor == "1001"
+    # A different notification with the SAME updated_at as the cursor.
+    tie = {
+        "id": "1004",
+        "updated_at": "2026-05-31T11:55:00Z",
+        "repository": {"full_name": "MovingBlocks/Terasology"},
+        "subject": {
+            "type": "Issue",
+            "title": "Simultaneous",
+            "url": "https://api.github.com/repos/MovingBlocks/Terasology/issues/44",
+        },
+    }
+    with patch.object(adapter, "_http_get",
+                      new=AsyncMock(return_value=[tie, *_SAMPLE_NOTIFICATIONS])):
+        alerts, _ = await adapter.fetch(cursor)
+
+    assert "1004" in {a.event_id for a in alerts}
+    assert "1001" not in {a.event_id for a in alerts}
+
+
+@pytest.mark.asyncio
+async def test_release_and_commit_web_urls():
+    """Release ids and commit paths need special handling, not a blanket rewrite."""
+    adapter = GitHubApiAdapter(
+        instance_id="g", scope="community/x",
+        repos=["MovingBlocks/Terasology"], token=None,
+    )
+    rows = [
+        {
+            "id": "2001",
+            "updated_at": "2026-06-01T10:00:00Z",
+            "repository": {
+                "full_name": "MovingBlocks/Terasology",
+                "html_url": "https://github.com/MovingBlocks/Terasology",
+            },
+            "subject": {
+                "type": "Commit",
+                "title": "Fix a thing",
+                "url": "https://api.github.com/repos/MovingBlocks/Terasology/commits/abc123",
+            },
+        },
+        {
+            "id": "2002",
+            "updated_at": "2026-06-01T09:00:00Z",
+            "repository": {
+                "full_name": "MovingBlocks/Terasology",
+                "html_url": "https://github.com/MovingBlocks/Terasology",
+            },
+            "subject": {
+                "type": "Release",
+                "title": "v1.2.3",
+                # Ends in the numeric API id, which appears in no web URL.
+                "url": "https://api.github.com/repos/MovingBlocks/Terasology/releases/98765",
+            },
+        },
+    ]
+    with patch.object(adapter, "_http_get", new=AsyncMock(return_value=rows)):
+        alerts, _ = await adapter.fetch(None)
+
+    by_id = {a.event_id: a for a in alerts}
+    # Singular /commit/, not the API's /commits/.
+    assert by_id["2001"].raw_post_ref == \
+        "https://github.com/MovingBlocks/Terasology/commit/abc123"
+    # No usable per-release web URL, so the releases page rather than a 404.
+    assert by_id["2002"].raw_post_ref == \
+        "https://github.com/MovingBlocks/Terasology/releases"
 
 
 @pytest.mark.asyncio

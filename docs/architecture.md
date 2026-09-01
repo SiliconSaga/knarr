@@ -156,12 +156,24 @@ that replaces Autoboros's NATS-based test harness (stem component).
 
 ### Test watchers without Kafka
 
-The watcher classes are pure Python with no Kafka dependency in their parsing
-logic. Unit tests call `parse_post()` and `parse_notification()` directly:
+Adapters are pure Python with no Kafka dependency. Since the Phase 1
+WatcherInstance refactor the entry point is `fetch(since_cursor)` on
+`RedditApiAdapter` / `GitHubApiAdapter` — the old `parse_post()` and
+`parse_notification()` functions are gone along with the watcher modules
+that held them.
+
+Tests patch `_http_get`, which exists on each adapter purely as that
+isolation seam, and assert on the returned `(alerts, cursor)` pair:
 
 ```bash
 python3 -m pytest tests/ -v
 ```
+
+Cursor behaviour is worth testing explicitly rather than incidentally: it is
+what decides whether an alert is emitted once, twice, or never. `WatcherInstance`
+only advances its cursor after Kafka confirms delivery, so the failure tests
+inject a producer whose `flush()` reports undelivered messages and assert the
+next poll re-fetches from the same point.
 
 ### Test the router without external platforms
 

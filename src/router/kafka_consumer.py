@@ -43,8 +43,14 @@ def deserialize_alert(raw: bytes) -> WatchAlert | None:
     try:
         data = json.loads(raw)
         return WatchAlert.from_kafka_dict(data)
-    except (json.JSONDecodeError, KeyError) as e:
-        logger.warning("Failed to deserialize alert: %s", e)
+    except (ValueError, KeyError, TypeError) as e:
+        # ValueError covers json.JSONDecodeError AND UnicodeDecodeError —
+        # invalid UTF-8 (b"\xff") raises the latter, which the original
+        # narrower catch let through and which would kill the consumer loop.
+        # TypeError covers a payload that is valid JSON of the wrong SHAPE:
+        # b"[]" decodes fine, then data["content"] subscripts a list.
+        # One malformed record must never take the router down.
+        logger.warning("Failed to deserialize alert: %s: %s", type(e).__name__, e)
         return None
 
 
@@ -67,3 +73,35 @@ def format_alert_message(alert: WatchAlert) -> str:
     if alert.raw_post_ref:
         lines.append(f"\U0001f517 {alert.raw_post_ref}")
     return "\n".join(lines)
+
+
+def format_alert_html(alert: WatchAlert) -> str:
+    """Format a WatchAlert as Matrix `formatted_body` — HTML, escaped.
+
+    Separate from format_alert_message because the two outputs have
+    different rules and only one of them is markup. The router previously
+    derived formatted_body by running `.replace("\\n", "<br>")` over the
+    plain text, which pushed **attacker-controlled content straight into
+    an HTML field**: alert bodies come from Reddit and GitHub, so a post
+    containing markup was rendered as markup in every operator's client.
+
+    Everything interpolated here is escaped first; the only tags in the
+    output are the ones this function adds.
+    """
+    from html import escape
+
+    emoji = PLATFORM_EMOJI.get(alert.platform, "\U0001f514")
+    platform = escape(alert.platform.capitalize())
+    instance = escape(alert.instance_id)
+    body = escape(alert.content.body).replace("\n", "<br>")
+
+    parts = [
+        f"{emoji} <strong>{platform}</strong> — {instance}",
+        body,
+    ]
+    if alert.raw_post_ref:
+        # Escaped in both the href and the text: a crafted ref must not be
+        # able to close the attribute and open another.
+        ref = escape(alert.raw_post_ref, quote=True)
+        parts.append(f'\U0001f517 <a href="{ref}">{ref}</a>')
+    return "<br>".join(parts)

@@ -22,7 +22,7 @@ import signal
 
 from confluent_kafka import Producer
 
-from src.admin.config_schema import InstanceConfig, load_config
+from src.admin.config_schema import InstanceConfig, load_config, validate_config
 from src.watchers.adapters.github_api import GitHubApiAdapter
 from src.watchers.adapters.reddit_api import RedditApiAdapter
 from src.watchers.instance import WatcherInstance
@@ -91,8 +91,18 @@ def build_adapter(config: InstanceConfig):
 
 def build_instances(config_path: str, producer: Producer,
                     kafka_topic: str) -> list[WatcherInstance]:
-    """Load config, build adapters, wrap in WatcherInstances."""
+    """Load config, validate it, build adapters, wrap in WatcherInstances.
+
+    validate_config runs HERE and not only in the CLI. The reconciler
+    validates before applying, but the watcher pod reads its config from a
+    mounted ConfigMap that nothing forces through that path — so a bad scope
+    or a malformed credentials_ref could reach the runtime unchecked and get
+    stamped onto every alert the instance published. Failing at startup makes
+    that a crashloop with a clear message instead of a stream of wrongly
+    scoped events.
+    """
     knarr_config = load_config(config_path)
+    validate_config(knarr_config)
     instances: list[WatcherInstance] = []
     for inst_cfg in knarr_config.instances:
         adapter = build_adapter(inst_cfg)
@@ -141,12 +151,27 @@ async def main():
 
     stop_event = asyncio.Event()
 
-    def handle_signal(signum, frame):
+    def handle_signal(signum: int):
         logger.info("signal %s received; shutting down", signum)
         stop_event.set()
 
-    signal.signal(signal.SIGTERM, handle_signal)
-    signal.signal(signal.SIGINT, handle_signal)
+    # Registered on the RUNNING LOOP rather than via signal.signal.
+    #
+    # signal.signal runs its handler between bytecodes, so setting an
+    # asyncio.Event from it does not wake a coroutine already parked in
+    # `asyncio.wait_for(stop_event.wait(), timeout=interval)`. With a
+    # six-hour poll interval that means SIGTERM is observed up to six hours
+    # late — well past any sane terminationGracePeriod, so Kubernetes SIGKILLs
+    # instead and shutdown is never graceful. add_signal_handler schedules the
+    # callback on the loop, which wakes the wait immediately.
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(sig, handle_signal, sig)
+        except NotImplementedError:
+            # Windows event loops do not implement this; fall back so local
+            # development on Windows still stops on Ctrl-C.
+            signal.signal(sig, lambda s, _f: handle_signal(s))
 
     await asyncio.gather(
         *[_poll_loop(inst, stop_event) for inst in instances]

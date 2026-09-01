@@ -50,22 +50,62 @@ class WatcherInstance:
         return int(self.config.polling.get("interval_seconds", 300))
 
     async def poll_once(self) -> int:
-        """One poll cycle. Returns the number of alerts published."""
+        """One poll cycle. Returns the number of alerts published.
+
+        The cursor advances ONLY after every alert in the batch is
+        confirmed delivered. Advancing it first — as this did originally —
+        means a producer failure permanently skips the alerts that failed:
+        the next poll asks the platform for everything *after* a cursor
+        covering events that never reached Kafka, and nothing ever
+        notices. Losing alerts silently is worse than re-delivering a few.
+        """
         alerts, new_cursor = await self.adapter.fetch(self._cursor)
-        self._cursor = new_cursor
+        if not alerts:
+            # Nothing to deliver, so nothing to lose. Still take the cursor:
+            # an empty fetch legitimately moves the tip forward.
+            self._cursor = new_cursor
+            return 0
 
-        for alert in alerts:
-            self.producer.produce(
-                self.kafka_topic,
-                key=f"{alert.platform}:{alert.instance_id}",
-                value=json.dumps(alert.to_kafka_dict()),
+        failures: list[str] = []
+
+        def _on_delivery(err, msg):
+            # Called by confluent_kafka during flush(). Errors arrive HERE,
+            # not from produce(), so a batch can "send" cleanly and still
+            # have failed — which is the whole reason for this callback.
+            if err is not None:
+                failures.append(str(err))
+
+        try:
+            for alert in alerts:
+                self.producer.produce(
+                    self.kafka_topic,
+                    key=f"{alert.platform}:{alert.instance_id}",
+                    value=json.dumps(alert.to_kafka_dict()),
+                    on_delivery=_on_delivery,
+                )
+        except BufferError as exc:
+            # Local queue full. Whatever was already queued still flushes
+            # below, but the batch is incomplete, so the cursor must not move.
+            logger.error(
+                "instance=%s produce buffer full (%s); keeping cursor at %s",
+                self.config.id, exc, self._cursor,
             )
-
-        if alerts:
             self.producer.flush()
-            logger.info(
-                "instance=%s published=%d new_cursor=%s",
-                self.config.id, len(alerts), new_cursor,
-            )
+            return 0
 
+        remaining = self.producer.flush()
+
+        if remaining or failures:
+            logger.error(
+                "instance=%s delivery incomplete (undelivered=%s failures=%s); "
+                "keeping cursor at %s so the next poll retries",
+                self.config.id, remaining, failures or "none", self._cursor,
+            )
+            return 0
+
+        self._cursor = new_cursor
+        logger.info(
+            "instance=%s published=%d new_cursor=%s",
+            self.config.id, len(alerts), new_cursor,
+        )
         return len(alerts)

@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from src.watchers.adapters.reddit_api import RedditApiAdapter
+from src.watchers.adapters.reddit_api import _MAX_PAGES, RedditApiAdapter
 
 _SAMPLE_REDDIT_JSON = {
     "data": {
@@ -15,7 +15,11 @@ _SAMPLE_REDDIT_JSON = {
                     "author": "cervator",
                     "permalink": "/r/Terasology/comments/post1/first_post/",
                     "selftext": "Hello world",
-                    "created_utc": 1748700000,
+                    # NEWER than post2 — /new sorts descending, and the
+                    # adapter takes the first child as the cursor tip. A
+                    # fixture in the opposite order quietly disagrees with the
+                    # ordering the code relies on.
+                    "created_utc": 1748700060,
                 }
             },
             {
@@ -26,7 +30,7 @@ _SAMPLE_REDDIT_JSON = {
                     "author": "[deleted]",
                     "permalink": "/r/Terasology/comments/post2/second/",
                     "selftext": "",
-                    "created_utc": 1748700060,
+                    "created_utc": 1748700000,
                 }
             },
         ]
@@ -86,7 +90,7 @@ async def test_deleted_author_handled():
                       new=AsyncMock(return_value=_SAMPLE_REDDIT_JSON)):
         alerts, _ = await adapter.fetch(None)
 
-    deleted_author_alert = [a for a in alerts if a.event_id == "t3_post2"][0]
+    deleted_author_alert = next(a for a in alerts if a.event_id == "t3_post2")
     assert deleted_author_alert.content.author == "[deleted]"
     assert deleted_author_alert.content.body == ""
 
@@ -101,3 +105,92 @@ async def test_empty_response_returns_empty_alerts():
         alerts, cursor = await adapter.fetch(None)
     assert alerts == []
     assert cursor is None
+
+
+def _page(names, after=None):
+    """Build a /new listing page from post names."""
+    return {
+        "data": {
+            "after": after,
+            "children": [
+                {
+                    "data": {
+                        "name": n,
+                        "id": n.removeprefix("t3_"),
+                        "title": f"Post {n}",
+                        "author": "someone",
+                        "permalink": f"/r/X/comments/{n}/x/",
+                        "selftext": "",
+                        "created_utc": 1748700000,
+                    }
+                }
+                for n in names
+            ],
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_pagination_walks_back_to_the_cursor():
+    """Posts beyond the first page must not be silently dropped.
+
+    Without paging, a subreddit that produced more posts than one page
+    between polls loses everything past that page — and the adapter cannot
+    tell a full page from a complete one, so nothing surfaces the loss.
+    """
+    adapter = RedditApiAdapter(
+        instance_id="r", scope="community/x", subreddit="X",
+    )
+    pages = [
+        _page(["t3_n1", "t3_n2"], after="t3_n2"),
+        _page(["t3_n3", "t3_old"], after="t3_older"),   # cursor is on page 2
+    ]
+    seen_urls = []
+
+    async def fake_get(url):
+        seen_urls.append(url)
+        return pages[len(seen_urls) - 1]
+
+    with patch.object(adapter, "_http_get", new=AsyncMock(side_effect=fake_get)):
+        alerts, cursor = await adapter.fetch("t3_old")
+
+    assert [a.event_id for a in alerts] == ["t3_n1", "t3_n2", "t3_n3"]
+    assert cursor == "t3_n1"
+    assert "after=t3_n2" in seen_urls[1]
+
+
+@pytest.mark.asyncio
+async def test_pagination_stops_when_listing_is_exhausted():
+    """A listing with no `after` ends the walk rather than looping."""
+    adapter = RedditApiAdapter(
+        instance_id="r", scope="community/x", subreddit="X",
+    )
+    calls = []
+
+    async def fake_get(url):
+        calls.append(url)
+        return _page(["t3_a"], after=None)
+
+    with patch.object(adapter, "_http_get", new=AsyncMock(side_effect=fake_get)):
+        alerts, _ = await adapter.fetch("t3_never_appears")
+
+    assert len(calls) == 1
+    assert [a.event_id for a in alerts] == ["t3_a"]
+
+
+@pytest.mark.asyncio
+async def test_pagination_is_bounded_when_cursor_is_never_found():
+    """A vanished cursor degrades to a bounded backlog, not an endless crawl."""
+    adapter = RedditApiAdapter(
+        instance_id="r", scope="community/x", subreddit="X",
+    )
+    calls = []
+
+    async def fake_get(url):
+        calls.append(url)
+        return _page([f"t3_p{len(calls)}"], after=f"t3_p{len(calls)}")
+
+    with patch.object(adapter, "_http_get", new=AsyncMock(side_effect=fake_get)):
+        await adapter.fetch("t3_deleted_post")
+
+    assert len(calls) == _MAX_PAGES

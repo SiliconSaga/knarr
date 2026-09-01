@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import pytest
+import yaml
 
 from src.admin.config_schema import (
     CommunityConfig,
@@ -11,6 +12,8 @@ from src.admin.config_schema import (
     load_config,
     validate_config,
 )
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 
 VALID_INDEX = {
     "server_name": "knarr.local",
@@ -554,14 +557,11 @@ def test_validate_rejects_non_string_secret_name():
         validate_config(config)
 
 
-def test_loads_real_test_config_with_instances(tmp_path):
+def test_loads_real_test_config_with_instances():
     """Walking the actual config/knarr.yaml from this repo parses cleanly
     and produces 2 instances."""
-    import pathlib
-    repo_root = pathlib.Path(__file__).resolve().parents[1]
-    config_path = repo_root / "config" / "knarr.yaml"
+    config_path = _REPO_ROOT / "config" / "knarr.yaml"
     if not config_path.exists():
-        import pytest
         pytest.skip(f"{config_path} not present in this checkout")
     parsed = load_config(str(config_path))
     assert len(parsed.instances) == 2
@@ -571,3 +571,37 @@ def test_loads_real_test_config_with_instances(tmp_path):
     gh = next(i for i in parsed.instances if i.id == "github-terasology")
     assert gh.credentials_ref["secret_key"] == "GITHUB_TOKEN"
     validate_config(parsed)  # must pass validation too
+
+
+def test_watcher_configmap_instances_match_the_source_config():
+    """The K8s ConfigMap embeds a COPY of config/. Catch it drifting.
+
+    `k8s/watchers/reddit-github.yaml` hand-maintains a copy of knarr.yaml so
+    the watcher pod can mount it. Generating it from source is the proper fix
+    and is still deferred — until then, a `config/` change nobody mirrored is
+    silent drift between what the CLI validates and what the pod actually
+    runs, and the pod wins.
+
+    Only `instances:` is compared, because that is the part that drives
+    behaviour. Two differences are DELIBERATE and must not fail this test:
+    the embedded `communities:` uses the bare filename (both files are flat
+    keys of one ConfigMap, so there is no `config/` directory in the pod),
+    and the embedded community omits the bridge room the watcher never reads.
+    """
+    manifest = _REPO_ROOT / "k8s" / "watchers" / "reddit-github.yaml"
+    source = _REPO_ROOT / "config" / "knarr.yaml"
+    if not manifest.exists() or not source.exists():
+        pytest.skip("manifest or source config not present in this checkout")
+
+    docs = [d for d in yaml.safe_load_all(manifest.read_text()) if d]
+    configmaps = [d for d in docs if d.get("kind") == "ConfigMap"]
+    assert configmaps, "expected a ConfigMap in the watcher manifest"
+
+    embedded = yaml.safe_load(configmaps[0]["data"]["knarr.yaml"])
+    on_disk = yaml.safe_load(source.read_text())
+
+    assert embedded["instances"] == on_disk["instances"], (
+        "k8s/watchers/reddit-github.yaml's embedded instances have drifted "
+        "from config/knarr.yaml. Update the ConfigMap to match, or the "
+        "watcher pod will run configuration nothing else validates."
+    )
