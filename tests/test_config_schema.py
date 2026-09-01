@@ -737,6 +737,17 @@ def test_loads_real_test_config_with_instances():
     validate_config(parsed)  # must pass validation too
 
 
+def test_real_config_declares_the_phase_a_publishers():
+    """The shipped config must actually carry the destinations Phase A adds."""
+    config_path = _REPO_ROOT / "config" / "knarr.yaml"
+    if not config_path.exists():
+        pytest.skip(f"{config_path} not present in this checkout")
+    parsed = load_config(str(config_path))
+    ids = {p.id for p in parsed.publishers}
+    assert {"mtl-matrix", "mtl-discord"} <= ids
+    validate_config(parsed)
+
+
 def test_watcher_configmap_instances_match_the_source_config():
     """The K8s ConfigMap embeds a COPY of config/. Catch it drifting.
 
@@ -768,4 +779,10 @@ def test_watcher_configmap_instances_match_the_source_config():
         "k8s/watchers/reddit-github.yaml's embedded instances have drifted "
         "from config/knarr.yaml. Update the ConfigMap to match, or the "
         "watcher pod will run configuration nothing else validates."
+    )
+    # Publishers are mirrored too. The watcher pod does not publish, but
+    # load_config parses the whole file, so an un-mirrored block is still
+    # drift — and an unchecked copy is how the last one went stale.
+    assert embedded.get("publishers") == on_disk.get("publishers"), (
+        "the embedded publishers have drifted from config/knarr.yaml"
     )

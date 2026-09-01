@@ -38,3 +38,23 @@ instances:
     credentials_ref:
       secret_name: knarr-cred-community-terasology-gh-pat
       secret_key: GITHUB_TOKEN
+
+publishers:
+  # Phase A ships only destinations we already run. Meta surfaces are Phase C,
+  # gated on developer-account verification.
+  - id: mtl-matrix
+    platform: matrix
+    surface: room
+    access_path: api
+    scope: community/mtl
+    target: "#social-watch:knarr.local"
+
+  - id: mtl-discord
+    platform: discord
+    surface: channel
+    access_path: bridge
+    scope: community/mtl
+    # A Matrix room that mautrix-discord bridges to a Discord channel.
+    # Delivery is confirmed by Matrix, not by Discord — see the adapter
+    # docstring for what the bridge cannot express.
+    target: "#autoboros-testing:knarr.local"
