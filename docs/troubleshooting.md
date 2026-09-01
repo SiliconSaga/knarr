@@ -26,11 +26,11 @@ otherwise unaffected and still produces Reddit alerts.
 **Fix:** create a fine-grained PAT, add it to `knarr.env` as
 `GITHUB_TOKEN`, restart the watcher Deployment.
 
-## Kafka topics never become Ready (or silently do not exist)
+## Kafka topics exist as objects but never become Ready
 
-**Symptom:** topics never reach `Ready=True` — or, worse, `kubectl get kafkatopic -n kafka` shows nothing at all and the apply reported success.
+**Symptom:** `kubectl apply` reports success and `kubectl get kafkatopic -n kafka` lists the topics — but they never reach `Ready=True`, and nothing exists on the broker. Producing to one creates a *different*, auto-created topic, or fails, depending on broker config.
 
-**The trap:** Strimzi **silently ignores** a `KafkaTopic` whose `strimzi.io/cluster` label names a cluster that does not exist. No event, no error, no condition — the topic object simply sits there doing nothing. A stale label therefore looks exactly like "not created yet", forever.
+**The trap:** Strimzi **silently ignores** a `KafkaTopic` whose `strimzi.io/cluster` label names a cluster that does not exist. The Kubernetes object is accepted and stored — so it looks present — but no operator claims it, so it gets no status and no broker-side topic. There is no event and no error anywhere. **The object existing is exactly what makes this hard to spot; "it's in `kubectl get`" is not evidence it works.** Check the READY column, not the presence of a row.
 
 **Historical cause (fixed 2026-08-28, mimir#18):** the `xkafkacluster-strimzi` composition used to name the cluster after the Crossplane *composite*, which carries a random suffix (`knarr-kafka-8r9tn`, then `knarr-kafka-2wjjq` after a rebuild). Every committed reference went stale on each teardown. Knarr's six topics were inert for two months for exactly this reason.
 
