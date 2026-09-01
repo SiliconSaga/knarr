@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import pytest
+import yaml
 
 from src.admin.config_schema import (
     CommunityConfig,
@@ -11,6 +12,8 @@ from src.admin.config_schema import (
     load_config,
     validate_config,
 )
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 
 VALID_INDEX = {
     "server_name": "knarr.local",
@@ -370,3 +373,326 @@ def test_nested_spaces():
     parent = community.spaces["parent"]
     assert "child" in parent.children
     assert "inner-room" in parent.children["child"].rooms
+
+
+def test_parse_instances_block():
+    """Top-level `instances:` parses into InstanceConfig dataclasses."""
+    cfg = {
+        **VALID_INDEX,
+        "instances": [
+            {
+                "id": "reddit-terasology",
+                "platform": "reddit",
+                "access_path": "api",
+                "scope": "community/terasology",
+                "credentials_ref": None,
+                "polling": {"interval_seconds": 21600},
+                "platform_config": {"subreddit": "Terasology"},
+                "target_room": "social-watch",
+            },
+            {
+                "id": "github-terasology",
+                "platform": "github",
+                "access_path": "api",
+                "scope": "community/terasology",
+                "credentials_ref": {
+                    "secret_name": "knarr-cred-community-terasology-gh-pat",
+                    "secret_key": "token",
+                },
+                "polling": {"interval_seconds": 21600},
+                "platform_config": {"repos": ["MovingBlocks/Terasology"]},
+                "target_room": "social-watch",
+            },
+        ],
+    }
+    parsed = KnarrConfig.from_dict(cfg, community_loader=lambda _: VALID_COMMUNITY)
+    assert len(parsed.instances) == 2
+    assert parsed.instances[0].id == "reddit-terasology"
+    assert parsed.instances[0].platform == "reddit"
+    assert parsed.instances[0].access_path == "api"
+    assert parsed.instances[0].scope == "community/terasology"
+    assert parsed.instances[0].credentials_ref is None
+    assert parsed.instances[0].polling["interval_seconds"] == 21600
+    assert parsed.instances[0].platform_config["subreddit"] == "Terasology"
+    assert parsed.instances[0].target_room == "social-watch"
+    assert (
+        parsed.instances[1].credentials_ref["secret_name"]
+        == "knarr-cred-community-terasology-gh-pat"
+    )
+
+
+def test_parse_instances_defaults_to_empty():
+    """No `instances:` key → instances is an empty list."""
+    parsed = KnarrConfig.from_dict(VALID_INDEX, community_loader=lambda _: VALID_COMMUNITY)
+    assert parsed.instances == []
+
+
+def test_validate_rejects_instance_with_unknown_scope_type():
+    """Scope must use the canonical prefixes: community/, user/, group/."""
+    bad = {
+        **VALID_INDEX,
+        "instances": [{
+            "id": "broken",
+            "platform": "reddit",
+            "access_path": "api",
+            "scope": "garbage/terasology",
+            "polling": {"interval_seconds": 100},
+            "platform_config": {},
+            "target_room": "social-watch",
+        }],
+    }
+    config = KnarrConfig.from_dict(bad, community_loader=lambda _: VALID_COMMUNITY)
+    with pytest.raises(ConfigError, match="scope"):
+        validate_config(config)
+
+
+def _instance(**overrides):
+    """A minimal valid reddit/api instance, with fields overridable."""
+    base = {
+        "id": "inst",
+        "platform": "reddit",
+        "access_path": "api",
+        "scope": "community/terasology",
+        "polling": {"interval_seconds": 100},
+        "platform_config": {"subreddit": "Terasology"},
+        "target_room": "social-watch",
+    }
+    base.update(overrides)
+    return {**VALID_INDEX, "instances": [base]}
+
+
+def _expect_config_error(payload, match):
+    config = KnarrConfig.from_dict(payload, community_loader=lambda _: VALID_COMMUNITY)
+    with pytest.raises(ConfigError, match=match):
+        validate_config(config)
+
+
+def test_validate_requires_polling_interval():
+    """A missing interval used to fall back to a hardcoded default silently."""
+    _expect_config_error(
+        _instance(polling={}), "interval_seconds is required",
+    )
+
+
+def test_validate_rejects_non_positive_polling_interval():
+    """Zero or negative turns the poll loop into a busy-wait on the platform."""
+    _expect_config_error(
+        _instance(polling={"interval_seconds": 0}), "must be positive",
+    )
+    _expect_config_error(
+        _instance(polling={"interval_seconds": -5}), "must be positive",
+    )
+
+
+def test_validate_rejects_non_integer_polling_interval():
+    """bool is an int subclass, so `interval_seconds: true` needs catching."""
+    _expect_config_error(
+        _instance(polling={"interval_seconds": "600"}), "must be an integer",
+    )
+    _expect_config_error(
+        _instance(polling={"interval_seconds": True}), "must be an integer",
+    )
+
+
+def test_validate_requires_reddit_subreddit():
+    """Previously a KeyError deep in adapter construction, naming nothing."""
+    _expect_config_error(
+        _instance(platform_config={}), "non-empty platform_config.subreddit",
+    )
+    _expect_config_error(
+        _instance(platform_config={"subreddit": "   "}),
+        "non-empty platform_config.subreddit",
+    )
+
+
+def test_validate_rejects_platform_access_path_without_an_adapter():
+    """A pair with no adapter used to fail only when build_adapter gave up.
+
+    Config that parses and validates cleanly, then dies at startup, is worse
+    than config that is rejected — the error arrives far from the mistake.
+    """
+    _expect_config_error(
+        _instance(platform="github", access_path="scrape",
+                  platform_config={"repos": ["a/b"]}),
+        "no adapter for github/scrape",
+    )
+    _expect_config_error(
+        _instance(platform="facebook", access_path="admin-app"),
+        "no adapter for facebook/admin-app",
+    )
+
+
+def test_validate_requires_github_repos():
+    _expect_config_error(
+        _instance(platform="github", platform_config={}),
+        "non-empty platform_config.repos",
+    )
+    _expect_config_error(
+        _instance(platform="github", platform_config={"repos": []}),
+        "non-empty platform_config.repos",
+    )
+    _expect_config_error(
+        _instance(platform="github", platform_config={"repos": ["ok", ""]}),
+        "must be a non-empty string",
+    )
+
+
+def test_parse_instance_rejects_non_string_scope():
+    """Non-string scope is caught at parse time, not at validate_config."""
+    bad = {
+        **VALID_INDEX,
+        "instances": [{
+            "id": "broken",
+            "platform": "reddit",
+            "access_path": "api",
+            "scope": 42,
+            "polling": {"interval_seconds": 100},
+            "platform_config": {},
+            "target_room": "social-watch",
+        }],
+    }
+    with pytest.raises(ConfigError, match="scope"):
+        KnarrConfig.from_dict(bad, community_loader=lambda _: VALID_COMMUNITY)
+
+
+def test_validate_rejects_credentials_ref_missing_secret_key():
+    """credentials_ref shape is caught at `config validate` time."""
+    bad = {
+        **VALID_INDEX,
+        "instances": [{
+            "id": "broken",
+            "platform": "github",
+            "access_path": "api",
+            "scope": "community/terasology",
+            "polling": {"interval_seconds": 100},
+            "platform_config": {"repos": ["a/b"]},
+            "target_room": "social-watch",
+            "credentials_ref": {"secret_name": "knarr-cred-x"},
+        }],
+    }
+    config = KnarrConfig.from_dict(bad, community_loader=lambda _: VALID_COMMUNITY)
+    with pytest.raises(ConfigError, match="secret_key"):
+        validate_config(config)
+
+
+def test_validate_rejects_credentials_ref_missing_secret_name():
+    """Symmetric: secret_name also required."""
+    bad = {
+        **VALID_INDEX,
+        "instances": [{
+            "id": "broken",
+            "platform": "github",
+            "access_path": "api",
+            "scope": "community/terasology",
+            "polling": {"interval_seconds": 100},
+            "platform_config": {"repos": ["a/b"]},
+            "target_room": "social-watch",
+            "credentials_ref": {"secret_key": "GITHUB_TOKEN"},
+        }],
+    }
+    config = KnarrConfig.from_dict(bad, community_loader=lambda _: VALID_COMMUNITY)
+    with pytest.raises(ConfigError, match="secret_name"):
+        validate_config(config)
+
+
+def test_validate_rejects_non_string_secret_key():
+    """Non-string secret_key would crash os.environ.get at runtime; catch it earlier."""
+    bad = {
+        **VALID_INDEX,
+        "instances": [{
+            "id": "broken",
+            "platform": "github",
+            "access_path": "api",
+            "scope": "community/terasology",
+            "polling": {"interval_seconds": 100},
+            "platform_config": {"repos": ["a/b"]},
+            "target_room": "social-watch",
+            "credentials_ref": {
+                "secret_name": "knarr-cred-x",
+                "secret_key": 42,
+            },
+        }],
+    }
+    config = KnarrConfig.from_dict(bad, community_loader=lambda _: VALID_COMMUNITY)
+    with pytest.raises(ConfigError, match="secret_key.*must be a string"):
+        validate_config(config)
+
+
+def test_parse_rejects_non_list_instances():
+    """A non-list (truthy) instances value is rejected with a clear message."""
+    bad = {**VALID_INDEX, "instances": "oops-not-a-list"}
+    with pytest.raises(ConfigError, match="instances must be a list"):
+        KnarrConfig.from_dict(bad, community_loader=lambda _: VALID_COMMUNITY)
+
+
+def test_validate_rejects_non_string_secret_name():
+    """Symmetric with the secret_key case: non-string secret_name is caught."""
+    bad = {
+        **VALID_INDEX,
+        "instances": [{
+            "id": "broken",
+            "platform": "github",
+            "access_path": "api",
+            "scope": "community/terasology",
+            "polling": {"interval_seconds": 100},
+            "platform_config": {"repos": ["a/b"]},
+            "target_room": "social-watch",
+            "credentials_ref": {
+                "secret_name": 42,
+                "secret_key": "GITHUB_TOKEN",
+            },
+        }],
+    }
+    config = KnarrConfig.from_dict(bad, community_loader=lambda _: VALID_COMMUNITY)
+    with pytest.raises(ConfigError, match="secret_name.*must be a string"):
+        validate_config(config)
+
+
+def test_loads_real_test_config_with_instances():
+    """Walking the actual config/knarr.yaml from this repo parses cleanly
+    and produces 2 instances."""
+    config_path = _REPO_ROOT / "config" / "knarr.yaml"
+    if not config_path.exists():
+        pytest.skip(f"{config_path} not present in this checkout")
+    parsed = load_config(str(config_path))
+    assert len(parsed.instances) == 2
+    assert {i.id for i in parsed.instances} == {
+        "reddit-terasology", "github-terasology",
+    }
+    gh = next(i for i in parsed.instances if i.id == "github-terasology")
+    assert gh.credentials_ref["secret_key"] == "GITHUB_TOKEN"
+    validate_config(parsed)  # must pass validation too
+
+
+def test_watcher_configmap_instances_match_the_source_config():
+    """The K8s ConfigMap embeds a COPY of config/. Catch it drifting.
+
+    `k8s/watchers/reddit-github.yaml` hand-maintains a copy of knarr.yaml so
+    the watcher pod can mount it. Generating it from source is the proper fix
+    and is still deferred — until then, a `config/` change nobody mirrored is
+    silent drift between what the CLI validates and what the pod actually
+    runs, and the pod wins.
+
+    Only `instances:` is compared, because that is the part that drives
+    behaviour. Two differences are DELIBERATE and must not fail this test:
+    the embedded `communities:` uses the bare filename (both files are flat
+    keys of one ConfigMap, so there is no `config/` directory in the pod),
+    and the embedded community omits the bridge room the watcher never reads.
+    """
+    manifest = _REPO_ROOT / "k8s" / "watchers" / "reddit-github.yaml"
+    source = _REPO_ROOT / "config" / "knarr.yaml"
+    if not manifest.exists() or not source.exists():
+        pytest.skip("manifest or source config not present in this checkout")
+
+    docs = [d for d in yaml.safe_load_all(manifest.read_text()) if d]
+    configmaps = [d for d in docs if d.get("kind") == "ConfigMap"]
+    assert configmaps, "expected a ConfigMap in the watcher manifest"
+
+    embedded = yaml.safe_load(configmaps[0]["data"]["knarr.yaml"])
+    on_disk = yaml.safe_load(source.read_text())
+
+    assert embedded["instances"] == on_disk["instances"], (
+        "k8s/watchers/reddit-github.yaml's embedded instances have drifted "
+        "from config/knarr.yaml. Update the ConfigMap to match, or the "
+        "watcher pod will run configuration nothing else validates."
+    )

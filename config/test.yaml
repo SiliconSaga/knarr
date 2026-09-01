@@ -19,14 +19,6 @@ spaces:
         # router posts watcher alerts; admin/knarr are explicit here because
         # the reconciler does not inherit space.members into child rooms.
         members: [admin, knarr, router]
-        watchers:
-          reddit:
-            subreddit: Terasology
-            interval_seconds: 21600
-          github:
-            repos: ["MovingBlocks/Terasology"]
-            interval_seconds: 21600
-            token_env: GITHUB_TOKEN
 
       bridge-test:
         alias: bridge-test

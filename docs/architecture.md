@@ -156,23 +156,37 @@ that replaces Autoboros's NATS-based test harness (stem component).
 
 ### Test watchers without Kafka
 
-The watcher classes are pure Python with no Kafka dependency in their parsing
-logic. Unit tests call `parse_post()` and `parse_notification()` directly:
+Adapters are pure Python with no Kafka dependency. Since the Phase 1
+WatcherInstance refactor the entry point is `fetch(since_cursor)` on
+`RedditApiAdapter` / `GitHubApiAdapter` — the old `parse_post()` and
+`parse_notification()` functions are gone along with the watcher modules
+that held them.
+
+Tests patch `_http_get`, which exists on each adapter purely as that
+isolation seam, and assert on the returned `(alerts, cursor)` pair:
 
 ```bash
 python3 -m pytest tests/ -v
 ```
+
+Cursor behaviour is worth testing explicitly rather than incidentally: it is
+what decides whether an alert is emitted once, twice, or never. `WatcherInstance`
+only advances its cursor after Kafka confirms delivery, so the failure tests
+inject a producer whose `flush()` reports undelivered messages and assert the
+next poll re-fetches from the same point.
 
 ### Test the router without external platforms
 
 Publish a test alert to Kafka and verify it appears in the Matrix room:
 
 ```bash
-echo '{"event_id":"test","timestamp":"2026-04-06T00:00:00Z","source":{"platform":"test","channel":"manual","community":"terasology"},"content":{"type":"test","body":"Testing the pipeline","url":null}}' | \
+echo '{"event_id":"manual-001","instance_id":"reddit-terasology","scope":"community/terasology","access_path":"api","platform":"reddit","raw_post_ref":"https://example.invalid/post","content":{"type":"post","title":"Manual test","body":"Testing the pipeline","author":"tester","attachments":[]},"timestamp":"2026-08-29T12:00:00+00:00","extracted_at":"2026-08-29T12:00:00+00:00"}' | \
   kcat -b localhost:9092 -t knarr.watch.alerts -P
 ```
 
-Then check `#social-watch` in Element or the router logs.
+Then check `#social-watch` in Element or the router logs. This is the **post-Phase 1 envelope**: the old nested `source: {platform, channel, community}` block was replaced by flat `instance_id` / `scope` / `access_path` / `platform` fields plus `raw_post_ref`. `from_kafka_dict` is deliberately strict and raises on a missing field rather than defaulting, so a message in the old shape is skipped by the consumer instead of arriving half-populated — if nothing appears, check the router logs for a decode error before suspecting Matrix.
+
+The router logs the Matrix event id it received back (`Posted alert from reddit/reddit-terasology (event $...)`). A line without one means the send was rejected, not delivered.
 
 ### Inspect everything via Kafka UI
 

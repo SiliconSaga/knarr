@@ -37,6 +37,15 @@ def _require_str_list(value: object, field_name: str) -> list[str]:
     return value
 
 
+def _require_str(value: object, field_name: str) -> str:
+    """Coerce value to str or raise ConfigError with field context."""
+    if not isinstance(value, str):
+        raise ConfigError(
+            f"{field_name} must be a string, got {type(value).__name__}"
+        )
+    return value
+
+
 @dataclass
 class RoomConfig:
     alias: str
@@ -122,12 +131,74 @@ class CommunityConfig:
         )
 
 
+_VALID_SCOPE_PREFIXES = ("community/", "user/", "group/")
+
+# (platform, access_path) pairs that src/watchers/run.py can build an adapter
+# for. Kept here rather than imported from the watcher so validation stays a
+# pure-config concern with no runtime dependency — the cost is that adding an
+# adapter means adding it in both places, which the dispatch table's final
+# `raise` will catch loudly if forgotten.
+_SUPPORTED_ADAPTERS = frozenset({
+    ("reddit", "api"),
+    ("github", "api"),
+})
+
+
+@dataclass
+class InstanceConfig:
+    """A single WatcherInstance: one (platform, access_path, scope) row.
+
+    Each instance is independently configured and runs against one source
+    on behalf of one identity scope. See
+    docs/plans/2026-05-30-knarr-source-identity-design.md for the model.
+    """
+    id: str
+    platform: str
+    access_path: str
+    scope: str
+    polling: dict
+    platform_config: dict
+    target_room: str            # config-key of the Matrix room to route alerts to.
+                                # Stored in Phase 1 but NOT consumed by the router
+                                # yet (Phase 1 router still posts to MATRIX_ROOM_ID,
+                                # preserving today's behaviour). Phase 2 reads it.
+    credentials_ref: dict | None = None  # {"secret_name": str, "secret_key": str}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> InstanceConfig:
+        required = ("id", "platform", "access_path", "scope",
+                    "polling", "platform_config", "target_room")
+        for key in required:
+            if key not in data:
+                raise ConfigError(f"instance is missing required field: {key}")
+        iid = data["id"]
+        return cls(
+            id=_require_str(iid, "instance.id"),
+            platform=_require_str(data["platform"], f"instance.{iid}.platform"),
+            access_path=_require_str(data["access_path"],
+                                     f"instance.{iid}.access_path"),
+            scope=_require_str(data["scope"], f"instance.{iid}.scope"),
+            polling=_require_mapping(data["polling"], f"instance.{iid}.polling"),
+            platform_config=_require_mapping(
+                data["platform_config"], f"instance.{iid}.platform_config"),
+            target_room=_require_str(data["target_room"],
+                                     f"instance.{iid}.target_room"),
+            credentials_ref=(
+                _require_mapping(
+                    data["credentials_ref"],
+                    f"instance.{iid}.credentials_ref")
+                if data.get("credentials_ref") is not None else None
+            ),
+        )
+
+
 @dataclass
 class KnarrConfig:
     server_name: str
     secrets: dict[str, str] = field(default_factory=dict)
     users: dict[str, str] = field(default_factory=dict)
     communities: list[CommunityConfig] = field(default_factory=list)
+    instances: list[InstanceConfig] = field(default_factory=list)
 
     @classmethod
     def from_dict(
@@ -144,11 +215,22 @@ class KnarrConfig:
             community_data = community_loader(path)
             communities.append(CommunityConfig.from_dict(community_data))
 
+        instances_raw = data.get("instances")
+        if instances_raw is None:
+            instances_raw = []
+        elif not isinstance(instances_raw, list):
+            raise ConfigError(
+                f"instances must be a list, got {type(instances_raw).__name__}"
+            )
+        instances = [InstanceConfig.from_dict(_require_mapping(i, "instance"))
+                     for i in instances_raw]
+
         return cls(
             server_name=data["server_name"],
             secrets=_require_mapping(data.get("secrets"), "secrets"),
             users=_require_mapping(data.get("users"), "users"),
             communities=communities,
+            instances=instances,
         )
 
 
@@ -272,6 +354,93 @@ def validate_config(config: KnarrConfig) -> None:
     for ref in sorted(all_user_refs):
         if ref not in known:
             errors.append(f"Unknown user reference: {ref} (known: {sorted(known)})")
+
+    for inst in config.instances:
+        if not any(inst.scope.startswith(p) for p in _VALID_SCOPE_PREFIXES):
+            errors.append(
+                f"Instance '{inst.id}': scope '{inst.scope}' must start with "
+                f"one of {_VALID_SCOPE_PREFIXES}"
+            )
+
+        # Polling cadence. Unvalidated, a missing key silently fell back to a
+        # hardcoded default and a zero or negative value turned the poll loop
+        # into a busy-wait hammering the platform.
+        interval = inst.polling.get("interval_seconds")
+        if interval is None:
+            errors.append(
+                f"Instance '{inst.id}': polling.interval_seconds is required"
+            )
+        elif isinstance(interval, bool) or not isinstance(interval, int):
+            # bool is an int subclass; `interval_seconds: true` is a mistake.
+            errors.append(
+                f"Instance '{inst.id}': polling.interval_seconds must be an "
+                f"integer, got {type(interval).__name__}"
+            )
+        elif interval <= 0:
+            errors.append(
+                f"Instance '{inst.id}': polling.interval_seconds must be "
+                f"positive, got {interval}"
+            )
+
+        # The (platform, access_path) pair must have an adapter. Without this
+        # a combination like github/scrape parsed cleanly, validated cleanly,
+        # and only failed when build_adapter reached its final `raise` — after
+        # the config had already been accepted as good.
+        if (inst.platform, inst.access_path) not in _SUPPORTED_ADAPTERS:
+            supported = ", ".join(
+                f"{p}/{a}" for p, a in sorted(_SUPPORTED_ADAPTERS)
+            )
+            errors.append(
+                f"Instance '{inst.id}': no adapter for "
+                f"{inst.platform}/{inst.access_path} (supported: {supported})"
+            )
+
+        # Per-platform required config. These were read straight out of
+        # platform_config at adapter-build time, so a typo surfaced as a
+        # KeyError deep in startup rather than as a config error naming the
+        # instance.
+        if inst.platform == "reddit" and inst.access_path == "api":
+            subreddit = inst.platform_config.get("subreddit")
+            if not isinstance(subreddit, str) or not subreddit.strip():
+                errors.append(
+                    f"Instance '{inst.id}': reddit/api requires a non-empty "
+                    f"platform_config.subreddit"
+                )
+        if inst.platform == "github" and inst.access_path == "api":
+            repos = inst.platform_config.get("repos")
+            if not isinstance(repos, list) or not repos:
+                errors.append(
+                    f"Instance '{inst.id}': github/api requires a non-empty "
+                    f"platform_config.repos list"
+                )
+            elif not all(isinstance(r, str) and r.strip() for r in repos):
+                errors.append(
+                    f"Instance '{inst.id}': every platform_config.repos entry "
+                    f"must be a non-empty string"
+                )
+        if inst.credentials_ref is not None:
+            secret_name = inst.credentials_ref.get("secret_name")
+            if secret_name is None or secret_name == "":
+                errors.append(
+                    f"Instance '{inst.id}': credentials_ref.secret_name "
+                    f"is required when credentials_ref is set"
+                )
+            elif not isinstance(secret_name, str):
+                errors.append(
+                    f"Instance '{inst.id}': credentials_ref.secret_name "
+                    f"must be a string, got {type(secret_name).__name__}"
+                )
+            secret_key = inst.credentials_ref.get("secret_key")
+            if secret_key is None or secret_key == "":
+                errors.append(
+                    f"Instance '{inst.id}': credentials_ref.secret_key "
+                    f"is required when credentials_ref is set"
+                )
+            elif not isinstance(secret_key, str):
+                errors.append(
+                    f"Instance '{inst.id}': credentials_ref.secret_key "
+                    f"must be a string, got {type(secret_key).__name__}"
+                )
 
     if errors:
         raise ConfigError("\n  - " + "\n  - ".join(errors))
