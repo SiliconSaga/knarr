@@ -6,19 +6,26 @@ from src.publisher.schemas import ObjectRef
 from src.watchers.schemas import Content
 
 
-class _FakeSendResponse:
-    def __init__(self, event_id):
-        self.event_id = event_id
-
-
 class _FakeClient:
-    def __init__(self, response=None):
-        self.sent = []
-        self._response = response or _FakeSendResponse("$evt1")
+    """Models MatrixAdminClient — synchronous, send_event + resolve_alias."""
 
-    async def room_send(self, room_id, message_type, content, tx_id=None):
-        self.sent.append({"room_id": room_id, "content": content, "tx_id": tx_id})
-        return self._response
+    def __init__(self, event_id="$evt1", raises=None):
+        self.sent = []
+        self.joined = []
+        self._event_id = event_id
+        self._raises = raises
+
+    def send_event(self, room_id, content, txn_id=None):
+        if self._raises:
+            raise self._raises
+        self.sent.append({"room_id": room_id, "content": content})
+        return self._event_id
+
+    def resolve_alias(self, alias):
+        return "!resolved:knarr.local"
+
+    def join_room(self, room_id):
+        self.joined.append(room_id)
 
 
 def _content(body="hello", title=""):
@@ -40,7 +47,7 @@ def test_declares_post_and_comment_but_not_message():
 
 @pytest.mark.asyncio
 async def test_post_returns_the_matrix_event_id():
-    client = _FakeClient(_FakeSendResponse("$abc"))
+    client = _FakeClient("$abc")
     result = await _pub(client).post(_content())
     assert result.ok is True
     assert result.ref.object_id == "$abc"
@@ -70,26 +77,63 @@ async def test_comment_threads_under_the_parent():
 
 @pytest.mark.asyncio
 async def test_a_rejected_send_is_reported_not_swallowed():
-    """nio RETURNS errors rather than raising. An unchecked send reports a
-    success that never happened — the exact bug the router shipped."""
-    class _Err:
-        message = "M_FORBIDDEN"
-
-    result = await _pub(_FakeClient(_Err())).post(_content())
+    """A publisher must never claim a post it cannot produce an id for —
+    the silent-success bug the router shipped, pointed outward."""
+    result = await _pub(_FakeClient(event_id="")).post(_content())
     assert result.ok is False
     assert result.ref is None
-    assert "M_FORBIDDEN" in result.error
+    assert "event_id" in result.error
 
 
 @pytest.mark.asyncio
 async def test_transport_exception_becomes_a_failed_result():
-    class _Boom:
-        async def room_send(self, *a, **k):
-            raise ConnectionResetError("reset")
-
-    result = await _pub(_Boom()).post(_content())
+    client = _FakeClient(raises=ConnectionResetError("reset"))
+    result = await _pub(client).post(_content())
     assert result.ok is False
     assert "reset" in result.error
+
+
+@pytest.mark.asyncio
+async def test_an_alias_target_is_resolved_to_a_room_id():
+    """Config names rooms by alias because aliases survive a cluster rebuild
+    and room ids do not."""
+    client = _FakeClient()
+    pub = MatrixPublisher(id="p", scope="community/mtl",
+                          room_id="#social-watch:knarr.local", client=client)
+    await pub.post(_content())
+    assert client.sent[0]["room_id"] == "!resolved:knarr.local"
+
+
+@pytest.mark.asyncio
+async def test_joins_the_room_before_sending():
+    """The reconciler invites but does not accept. An invited-but-unjoined
+    user gets 403 on every send — found live during Phase A validation."""
+    client = _FakeClient()
+    await _pub(client).post(_content())
+    assert client.joined == ["!room:knarr.local"]
+
+
+@pytest.mark.asyncio
+async def test_joins_only_once_across_sends():
+    client = _FakeClient()
+    pub = _pub(client)
+    await pub.post(_content())
+    await pub.post(_content("again"))
+    assert len(client.joined) == 1
+    assert len(client.sent) == 2
+
+
+@pytest.mark.asyncio
+async def test_an_unresolvable_alias_fails_rather_than_guessing():
+    class _NoAlias(_FakeClient):
+        def resolve_alias(self, alias):
+            return None
+
+    pub = MatrixPublisher(id="p", scope="community/mtl",
+                          room_id="#missing:knarr.local", client=_NoAlias())
+    result = await pub.post(_content())
+    assert result.ok is False
+    assert "does not resolve" in result.error
 
 
 def test_validate_rejects_an_empty_body():

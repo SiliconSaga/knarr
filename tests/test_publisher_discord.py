@@ -5,18 +5,22 @@ from src.publisher.protocols import capabilities_of
 from src.watchers.schemas import Content
 
 
-class _FakeSendResponse:
-    def __init__(self, event_id="$evt"):
-        self.event_id = event_id
-
-
 class _FakeClient:
+    """Models MatrixAdminClient — synchronous, send_event + resolve_alias."""
+
     def __init__(self):
         self.sent = []
+        self.joined = []
 
-    async def room_send(self, room_id, message_type, content, tx_id=None):
+    def send_event(self, room_id, content, txn_id=None):
         self.sent.append({"room_id": room_id, "content": content})
-        return _FakeSendResponse()
+        return "$evt"
+
+    def resolve_alias(self, alias):
+        return "!resolved:knarr.local"
+
+    def join_room(self, room_id):
+        self.joined.append(room_id)
 
 
 def _content(body="hello"):

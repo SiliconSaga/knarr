@@ -13,3 +13,8 @@ knarr.env
 # local experiments / screenshots / scratch
 Screenshot*.png
 *.scratch
+
+# Publish result store — the record of what has already been sent to real
+# platforms. Machine-local by nature: committing it would let one operator's
+# "already published" state suppress another's send.
+.knarr/

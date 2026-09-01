@@ -131,6 +131,28 @@ class MatrixAdminClient:
         )
         return resp.json()["event_id"]
 
+    def send_event(self, room_id: str, content: dict,
+                   txn_id: str | None = None) -> str:
+        """Send an arbitrary m.room.message content dict. Returns the event ID.
+
+        `send_message` above only ever sends plain text, which cannot carry
+        `formatted_body` or an `m.relates_to` thread relation — both of which
+        the publisher needs. Taking the whole content dict keeps that shaping
+        in the publisher where it belongs.
+
+        `txn_id` is settable so a caller retrying a send can reuse it:
+        Matrix deduplicates by transaction id, which turns "did that land?"
+        into an idempotent question rather than a second message.
+        """
+        txn_id = txn_id or uuid.uuid4().hex
+        resp = self._authed_request(
+            "PUT",
+            f"/_matrix/client/v3/rooms/{self._encode_room(room_id)}"
+            f"/send/m.room.message/{txn_id}",
+            json=content,
+        )
+        return resp.json()["event_id"]
+
     def get_messages(
         self, room_id: str, limit: int = 10, direction: str = "b"
     ) -> list[dict]:
