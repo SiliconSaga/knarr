@@ -3,7 +3,7 @@
 **Date:** 2026-08-30 (revised 2026-08-31 — capability model, scope authorization, idempotency, media handling)
 **Status:** Design merged (knarr#9, 2026-09-01); no publisher implemented yet. Map of all Knarr notes: [README](README.md).
 **Component:** knarr
-**Builds on:** [Source-Identity Design](2026-05-30-knarr-source-identity-design.md) (the inbound complement — watcher instances, adapters, scope, credentials) · [the OG 2026-04-02 design](../../../../realms/realm-siliconsaga/docs/plans/2026-04-02-knarr-design.md) (Matrix/Kafka layers, the approve-then-fan-out topics)
+**Builds on:** [Source-Identity Design](2026-05-30-knarr-source-identity-design.md) (the inbound complement — watcher instances, adapters, scope, credentials) · [the OG 2026-04-02 design](https://github.com/SiliconSaga/realm-siliconsaga/blob/main/docs/plans/2026-04-02-knarr-design.md) (Matrix/Kafka layers, the approve-then-fan-out topics)
 
 ---
 

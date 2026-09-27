@@ -3,7 +3,7 @@
 **Date:** 2026-09-27
 **Status:** Draft, for discussion (no implementation planned yet)
 **Component:** knarr
-**Builds on:** [the OG 2026-04-02 design](../../../../realms/realm-siliconsaga/docs/plans/2026-04-02-knarr-design.md) (subscription model, display modes, "meet people where they are") · [Source-Identity Design](2026-05-30-knarr-source-identity-design.md) (WatcherInstance, scope axis, Group C) · [Publish Design](2026-08-30-knarr-publish-design.md) (PublisherInstance, capabilities, origins)
+**Builds on:** [the OG 2026-04-02 design](https://github.com/SiliconSaga/realm-siliconsaga/blob/main/docs/plans/2026-04-02-knarr-design.md) (subscription model, display modes, "meet people where they are") · [Source-Identity Design](2026-05-30-knarr-source-identity-design.md) (WatcherInstance, scope axis, Group C) · [Publish Design](2026-08-30-knarr-publish-design.md) (PublisherInstance, capabilities, origins)
 
 ---
 
@@ -17,7 +17,7 @@ Three additions:
 - **Where a platform has native membership, the platform is the subscription store.** A Google Group, a WhatsApp group, or a Facebook group already knows who is in it and already handles join and leave. Knarr posts to the group and never holds the member list. Keycloak keeps subscriptions only for channels with no native group of their own (SMS) and for operator identity.
 - **Digests are a scheduled origin.** "This week at Mount Pleasant PTA" is a `PublishRequest` assembled from calendar events and announcements on a schedule, approved by policy rather than by a person, rendered once per channel.
 
-None of this changes the existing pipeline. Each addition is an adapter, a config shape, or a consumer on topics that already exist.
+None of this changes the pipeline as designed. The calendar watcher is one more adapter on the inbound side that runs today. The digest and the Google Group publisher sit on the publish design's Phase A (the `knarr.publish.requests` topic, scope authorization, idempotent fan-out), which is specified but not built, so nothing outbound in this note runs on the currently deployed pipeline.
 
 ---
 
@@ -56,7 +56,7 @@ Read across: what a parent does, who holds the membership, what Knarr does, and 
 |---|---|---|---|---|
 | Own calendar app | click "Add to Google Calendar" or the ICS link on wopta.org | the parent's device | none | 0 |
 | Google Group (email) | join the group, or be added by the PTA | Google | post digests and announcements to the group address | 2 |
-| Calendar notifications by email | the calendar is shared with the Google Group | Google | none; sharing the calendar with the group is a one-time admin act | 0 |
+| Google's own calendar notifications | join the group, add the shared calendar from the invitation, pick notification settings | Google | none; the admin shares the calendar with the group once, each member does the rest | 0 |
 | WhatsApp group | join the group | WhatsApp | post the digest through the bridge; surface replies in Matrix | 3 |
 | Facebook group / Page | follow or join | Meta | post approved items; surface comments (gated on Meta developer access) | 4 |
 | Instagram | follow | Meta | post approved flyers | 4 |
@@ -89,10 +89,10 @@ instances:
 
 **Alert kinds** on `knarr.watch.alerts`, using the existing envelope with `content.type` set to one of:
 
-- `event.created`, `event.updated`, `event.cancelled` — the diff between two ICS snapshots, keyed by `UID`, with `SEQUENCE` and `LAST-MODIFIED` deciding what counts as a change. Updates carry the changed fields so a digest can say "moved to 5pm" rather than reprinting the event.
+- `event.created`, `event.updated`, `event.cancelled` — the diff between two ICS snapshots, keyed by `UID` plus `RECURRENCE-ID` (an overridden or cancelled single occurrence of a recurring event carries the series' `UID` and its own `RECURRENCE-ID`, so `UID` alone would make it collide with the series), with `SEQUENCE` and `LAST-MODIFIED` deciding what counts as a change. Updates carry the changed fields so a digest can say "moved to 5pm" rather than reprinting the event.
 - `event.upcoming` — emitted once per (event, lead time) when the calendar's clock crosses the threshold. This is the reminder primitive. It is what lets a "night before" SMS and a "this week" email be the same consumer with different lead times.
 
-**Cursor.** ICS has no change feed, so the cursor is the previous snapshot: a map of `UID` to a content hash, plus the set of `(UID, lead_time)` pairs already emitted. Small enough for Valkey, and it makes the adapter honest in the way the source-identity review demanded: the cursor advances only after Kafka confirms delivery, so a failed publish re-diffs from the same snapshot.
+**Cursor.** ICS has no change feed, so the cursor is the previous snapshot: a map of `(UID, RECURRENCE-ID)` to a content hash, plus the set of `(UID, RECURRENCE-ID, lead_time)` triples already emitted. Small enough for Valkey, and it makes the adapter honest in the way the source-identity review demanded: the cursor advances only after Kafka confirms delivery, so a failed publish re-diffs from the same snapshot.
 
 **Why anonymous ICS first.** The Google Calendar API with push notifications is better (seconds instead of fifteen minutes, no diffing) and belongs to the `admin-app` access path with a Workspace service account. It is also another credential and another OAuth consent flow. The public ICS gets a working calendar source with zero secrets, which is the right first step for a component whose history is full of silent-failure lessons. Upgrade the access path later without touching consumers.
 
@@ -136,7 +136,7 @@ So the rule, generalising what the OG design already says about WhatsApp ("users
 Consequences:
 
 - Knarr never sees a parent's email address. The digest goes to one address. This is the single biggest privacy improvement available and it costs nothing.
-- The calendar can be shared with the same group, which gives every member Google's own event notifications (new, changed, cancelled, daily agenda) with no Knarr involvement. A parent who wants "the household calendar experience" gets it by joining one group.
+- The calendar can be shared with the same group. That grants *access*, not notifications: each member still adds the calendar from the sharing invitation (whether it appears automatically depends on the group's settings) and then chooses their own notification settings, which is where event reminders, new/changed/cancelled event emails, and the daily agenda live. A parent who wants "the household calendar experience" can get it, but it is per-person setup. The Knarr digest is the one email that reaches every member with no setup on their side, and the design treats it as the guaranteed path.
 - `!knarr subscribe <email> ...` from the OG design becomes "add them to the group," a thing the PTA can do in the Groups UI without an operator.
 - If the group allows members to post, it is also a **source**: a discussion list. That makes it a `WatcherInstance` too (Groups API, or the Phase 5 email-extract path against the WOPTA mailbox). Whether members may post is a per-PTA policy decision, not a Knarr one; both shapes are supported.
 
@@ -154,7 +154,7 @@ The publish design's origin table gains a row:
 |---|---|---|---|
 | `schedule` | Any community with a calendar and a routine to keep | A policy set once, optionally with a Matrix reaction gate for the first weeks | Proposed here |
 
-An origin's contract is unchanged: produce a validated, authorized `PublishRequest` and assert a human approved it. For `schedule`, the human approved the *policy* (the template, the targets, the cadence) when the `DigestSpec` was merged into config. `approved_by` names the config author and `approved_at` the config's commit. A `review: matrix` option posts the rendered digest into an operator room and waits for a reaction before sending, which is how the first few weeks should run.
+An origin's contract is that it produces a validated, authorized `PublishRequest` and asserts a human approved it. `schedule` is a **stated exception** to the per-request half of that: the human approved the *policy* (the template, the targets, the cadence) when the `DigestSpec` was merged into config, so `approved_by` names the config author and `approved_at` the merge commit, and downstream fan-out must accept that shape only when `origin == "schedule"`. When this is implemented, `schedule` joins `git-merge | cli | matrix` in the `PublishRequest` schema and the validator, and the publish design's origin table gets this row. A `review: matrix` option restores a per-request human gate: it posts the rendered digest into an operator room and waits for a reaction before sending, which is how the first few weeks should run.
 
 ### `DigestSpec`
 
@@ -162,7 +162,8 @@ An origin's contract is unchanged: produce a validated, authorized `PublishReque
 digests:
   - id: mpe-weekly
     scope: group/pta-mpe
-    schedule: "0 18 * * 0"           # Sunday 6pm, America/New_York
+    schedule: "0 18 * * 0"           # Sunday 6pm
+    timezone: America/New_York       # required; the cron is evaluated in this zone, DST included
     window:
       events: P7D                     # calendar events starting in the next 7 days
       announcements: since_last_run   # items from the announcements room since the previous digest
@@ -174,15 +175,16 @@ digests:
       - publisher: mpe-families-list
         verb: post
         render: email
-      - publisher: mpe-whatsapp        # Matrix room bridged to the WhatsApp group
-        verb: post
-        render: plain
+      - publisher: mpe-families-room   # a MATRIX publisher whose room is bridged to the WhatsApp group;
+        verb: post                     # post is valid on Matrix. A native WhatsApp publisher is
+        render: plain                  # Conversational only and would need `message` plus a thread
     quiet: skip_if_empty
     review: matrix                    # or: policy
 
   - id: mpe-tomorrow
     scope: group/pta-mpe
     schedule: "0 19 * * *"
+    timezone: America/New_York
     window:
       events: P1D
     sources:
@@ -197,9 +199,9 @@ digests:
 
 ### How it runs
 
-A **digest consumer** reads `knarr.watch.alerts` (calendar and announcement events), keeps the window per digest, and on schedule assembles one `PublishRequest` per digest with one `Target` per configured publisher. It emits to `knarr.publish.requests` and the existing fan-out does the rest: scope authorization, per-target validation, idempotent delivery, `ObjectRef` recording.
+A **digest consumer** reads two topics: `knarr.watch.alerts` for calendar events, and `knarr.messages.inbound` for announcements from the configured rooms, since Matrix room traffic enters Kafka on that topic and not on the alerts topic. The Matrix-to-Kafka direction of the router is still marked planned in `docs/architecture.md`, so the announcements half of a digest depends on it; the calendar half does not. The consumer keeps the window per digest and on schedule assembles one `PublishRequest` per digest with one `Target` per configured publisher. It emits to `knarr.publish.requests` and the publish design's fan-out does the rest: scope authorization, per-target validation, idempotent delivery, `ObjectRef` recording.
 
-- **`request_id`** is `hash(scope, digest_id, period_start)`. A re-run for the same period reposts nothing, which matters because a scheduler that restarts will try.
+- **`request_id`** is the SHA-256 of `scope`, `digest_id`, and `period_start` (RFC 3339, UTC), joined by newlines, hex-encoded. A canonical encoding and a fixed algorithm, never a language `hash()` (Python's is per-process randomized), so a scheduler that restarts and re-runs the same period produces the same id and reposts nothing.
 - **Render styles** are a small fixed set: `email` (HTML with a plain-text part, an unsubscribe line pointing at the group), `plain` (WhatsApp and Matrix, short lines, no markup), `line` (SMS, one event per message, under 160 characters), and later `card` (an image for Instagram via flyer-kit). Rendering is a template per style, not an AI step. The publish design's `adapt: true` remains available per target for the day someone wants it.
 - **`quiet: skip_if_empty`** is the default and should stay the default. A digest with nothing in it teaches people to ignore digests.
 - **Changes get their own section.** "Moved: Movie Night now starts at 6:30" is more useful than the whole week reprinted. Cancellations of events inside the next 48 hours bypass the schedule and go out as an immediate `plain` and `line` post; that is the one case where a calendar edit should interrupt someone.
@@ -219,7 +221,7 @@ The source-identity design's three scopes map cleanly onto how the district is o
 
 Public calendars are public by definition, so a `community/wopta` digest may include every PTA's public events. Anything a PTA does not put on its public calendar never leaves its `group/` scope. The scope authorization rule in the publish design then does real work: a request scoped `group/pta-mpe` cannot reach `group/pta-redwood`'s group address even by typo.
 
-Whether `group/pta-<key>` also needs a Keycloak group is open. Under the membership rule above, the members are in Google and WhatsApp, not Keycloak; the Keycloak group would hold only that PTA's operators. That may be enough.
+**This revises the source-identity design's scope table**, which names group scopes `group/<keycloak-group-id>`. Here `group/` scopes are slugs, exactly as `community/` scopes already are (`community/terasology` is a slug in the live config). A slug is what appears in config, calendar keys, subdomains, and room names, and it survives a Keycloak rebuild; a Keycloak group id, where a Keycloak group exists, becomes an attribute *of* the group rather than its name. Authorization compares slugs, and the source-identity design's table should be updated to say so when this note is accepted. Whether a Keycloak group is needed per PTA at all stays open: under the membership rule above the members are in Google and WhatsApp, and the Keycloak group would hold only that PTA's operators.
 
 ---
 
@@ -240,7 +242,7 @@ When Knarr arrives, it slots in behind these without changing any of them.
 
 Ordered so each step is useful on its own and none waits on Meta.
 
-**Phase 1 — calendar watcher.** The `calendar` platform with the anonymous ICS access path, one instance per PTA calendar plus the district feed, posting `event.*` alerts into a `#pta/events` room. This is a pure `ApiAdapter` in the source-identity design's terms and arguably an easier first new platform than Bluesky: no auth, a stable format, and a diff-based cursor that exercises the delivery-confirmation rule. *Exit: an event added on a phone appears in Matrix within fifteen minutes; editing it produces an `event.updated` with the changed fields.*
+**Phase 1 — calendar watcher.** The `calendar` platform with the anonymous ICS access path, one instance per PTA calendar plus the district feed, emitting `event.*` alerts. This is a pure `ApiAdapter` in the source-identity design's terms and arguably an easier first new platform than Bluesky: no auth, a stable format, and a diff-based cursor that exercises the delivery-confirmation rule. One honest limit: the router today posts every alert to the single configured room (`MATRIX_ROOM_ID`); per-instance `target_room` routing is a source-identity Phase 2 item, so a dedicated `#pta/events` room waits on that or on this phase carrying the routing change. *Exit: an event added on a phone appears in the configured watch room within fifteen minutes; editing it produces an `event.updated` with the changed fields.*
 
 **Phase 2 — Google Group publisher and the weekly digest.** The `google-group` publisher over SMTP, the `schedule` origin, the digest consumer with the `email` render, `review: matrix` on. Needs the publish design's Phase A primitives (authorization, idempotent fan-out, `ObjectRef` persistence) and gives them a second real destination. *Exit: Sunday evening, a digest lands in the group's archive, and re-running the scheduler sends nothing.*
 
