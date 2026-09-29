@@ -1,7 +1,7 @@
 # Knarr Source-Identity Design
 
 **Date:** 2026-05-30
-**Status:** Draft
+**Status:** Phase 1 implemented (knarr#8, merged 2026-09-01); Phases 2–6 open. Tracker: [SiliconSaga/knarr#6](https://github.com/SiliconSaga/knarr/issues/6). Map of all Knarr notes: [README](README.md).
 **Component:** knarr
 **Builds on:** `realms/realm-siliconsaga/docs/plans/2026-04-02-knarr-design.md`
 (the OG community-fan-out design — outbound routing model, Keycloak identity).

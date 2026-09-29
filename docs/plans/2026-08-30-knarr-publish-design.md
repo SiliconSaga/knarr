@@ -1,9 +1,9 @@
 # Knarr Publish Design — outbound fan-out, capabilities, and the origin axis
 
 **Date:** 2026-08-30 (revised 2026-08-31 — capability model, scope authorization, idempotency, media handling)
-**Status:** Draft, in review
+**Status:** Design merged (knarr#9, 2026-09-01); no publisher implemented yet. Map of all Knarr notes: [README](README.md).
 **Component:** knarr
-**Builds on:** [Source-Identity Design](2026-05-30-knarr-source-identity-design.md) (the inbound complement — watcher instances, adapters, scope, credentials) · [the OG 2026-04-02 design](../../../../realms/realm-siliconsaga/docs/plans/2026-04-02-knarr-design.md) (Matrix/Kafka layers, the approve-then-fan-out topics)
+**Builds on:** [Source-Identity Design](2026-05-30-knarr-source-identity-design.md) (the inbound complement — watcher instances, adapters, scope, credentials) · [the OG 2026-04-02 design](https://github.com/SiliconSaga/realm-siliconsaga/blob/main/docs/plans/2026-04-02-knarr-design.md) (Matrix/Kafka layers, the approve-then-fan-out topics)
 
 ---
 
@@ -374,6 +374,8 @@ A **CI-side `social.yml` validator** in volundr is worth adding later — unknow
 **The PTA's stated problem is fragmentation, not publishing.** Communication is scattered across several WhatsApp groups and Facebook with little web presence, and the pain is that nobody can see it all.
 
 That is the *inbound* half of Knarr, with publishing secondary. Treating the PTA as "MTL but on WhatsApp" would build the wrong thing first. The `cli` origin is specified here anyway because it is small and needs no infrastructure — but **the PTA's first real value is aggregation**, and that ordering belongs in whatever plan follows.
+
+The concrete version of that ordering is now its own note: the [Community Reach Design](2026-09-27-knarr-community-reach-design.md) makes the PTA's calendar a source, uses a Google Group as the membership store, and adds digests as a `schedule` origin on top of the pipeline specified here.
 
 ---
 

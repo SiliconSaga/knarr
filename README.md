@@ -21,6 +21,7 @@ between platform ports, knowing the routes (routing rules), and keeping a manife
 | [Discord Bridge Setup](docs/discord-bridge-setup.md) | mautrix-discord setup, identity mapping, troubleshooting |
 | [Tailscale Setup](docs/tailscale-setup.md) | Remote access via Tailscale Serve for phone/off-LAN |
 | Design Spec | Full design in the yggdrasil workspace: `docs/plans/2026-04-02-knarr-design.md` |
+| [Community Reach Design](docs/plans/2026-09-27-knarr-community-reach-design.md) | Group C delivery: the calendar as a source, platform-native membership, scheduled digests |
 
 ## Architecture
 
