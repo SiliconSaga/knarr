@@ -145,7 +145,11 @@ Knarr services) on GKE without public ingress:
 - ACLs can restrict which tailnet users can reach which services
 - No Traefik host routing needed — each service has a unique IP
 
-This becomes relevant when moving from local k3d to GKE production.
+This becomes relevant when moving from local k3d to GKE production. The
+operator is already proven on GKE: Heimdall's AlertManager reaches ntfy on the
+phone through it, and nidavellir's ntfy composition is the reference to copy.
+When Synapse graduates to GKE, expose it this way rather than with
+`tailscale serve` on a workstation.
 
 ## Gotchas
 

@@ -50,3 +50,17 @@ The authoritative bootstrap address is published on the claim — read it rather
 ```bash
 kubectl get kafkacluster knarr-kafka -n knarr -o jsonpath='{.status.bootstrapServers}'
 ```
+
+## New Kafka cluster crashloops on `Invalid cluster.id` after a rename
+
+**Cause:** renaming the cluster makes Crossplane retarget its existing `Object`, so the old `Kafka` and `KafkaNodePool` survive unmanaged. Their PVC (`deleteClaim: false`) outlives them, and a later cluster whose pod claims the same PVC name adopts it and refuses the foreign cluster id.
+
+**Fix:** delete the old `Kafka`, its `KafkaNodePool` and its PVC together. Expect this again on the first GKE rename.
+
+## Router logged a post that never appeared
+
+matrix-nio returns error objects instead of raising, so an unchecked send "succeeds". An invited-but-unjoined bot hit this before knarr#8, which made the router join at startup, check every send result, and log the Matrix event id. Check the result of any new nio call the same way.
+
+## BDD run gets 403 on `/members` right after teardown
+
+`DELETE /_synapse/admin/v2/rooms/{id}` returns at once and purges in the background, so the alias still resolves for a moment and the next run finds a room that is being deleted. The teardown step in `tests/features/steps/reconcile_steps.py` does not wait yet. The fix is to poll `/_synapse/admin/v2/rooms/delete_status/{delete_id}` after each DELETE. Until then, wait a few seconds and re-run.

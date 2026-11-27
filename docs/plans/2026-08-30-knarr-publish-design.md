@@ -404,6 +404,7 @@ Phases A and B are entirely unblocked today.
 - **Cross-posting inbound to outbound.** Needs the engagement loop first.
 - **Deletion and editing of published posts.** Platforms vary wildly and failure modes are worse than for publishing.
 - **Analytics.** Nobody has asked what question it would answer.
+- **Browser agents (Claude Cowork and the like) as a publisher.** Wrong for Pages we administer, where the Graph API is deterministic and returns ids. Plausible later as a cheap read-only tier for scrape-style sources, feeding in through the source-identity design's email-extract path. (Added 2026-11-27.)
 
 ---
 
