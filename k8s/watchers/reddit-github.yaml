@@ -79,7 +79,7 @@ data:
         surface: channel
         access_path: bridge
         scope: community/mtl
-        target: "#autoboros-testing:knarr.local"
+        target: "#bridge-test:knarr.local"
 
   # Carried alongside under the same /etc/knarr/ mount so load_config()'s
   # community_loader resolves `test.yaml` relative to knarr.yaml's directory.

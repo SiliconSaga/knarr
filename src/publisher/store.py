@@ -12,6 +12,8 @@ not a rewrite of its callers.
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from dataclasses import asdict
 from pathlib import Path
 from typing import Protocol
@@ -62,11 +64,14 @@ class JsonResultStore:
         data = self._load()
         data[_key(request_id, publisher_id, verb)] = asdict(ref)
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        # Write via a temp file so an interrupted write cannot truncate the
-        # store into the corrupt state above.
-        tmp = self._path.with_suffix(self._path.suffix + ".tmp")
-        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        tmp.replace(self._path)
+        # Write via a uniquely named temp file so an interrupted write cannot
+        # truncate the store, and two writers never share one temp path.
+        # This does not serialize writers; see docs/operations.md.
+        fd, tmp = tempfile.mkstemp(dir=self._path.parent,
+                                   prefix=self._path.name, suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(data, indent=2))
+        Path(tmp).replace(self._path)
 
     def get(self, request_id: str, publisher_id: str,
             verb: str) -> ObjectRef | None:

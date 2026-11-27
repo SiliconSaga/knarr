@@ -57,4 +57,4 @@ publishers:
     # A Matrix room that mautrix-discord bridges to a Discord channel.
     # Delivery is confirmed by Matrix, not by Discord — see the adapter
     # docstring for what the bridge cannot express.
-    target: "#autoboros-testing:knarr.local"
+    target: "#bridge-test:knarr.local"
