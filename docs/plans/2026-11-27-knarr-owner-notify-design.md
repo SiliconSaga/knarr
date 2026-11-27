@@ -22,19 +22,20 @@ The PKM v2 design splits personal organizing three ways: the workflow lives in t
 
 - **Destination.** A personal room under scope `user/cervator`, reached by a Matrix publisher. Tentative names, fixed when the reconciler declares them: publisher `owner-matrix`, room `#cervator-inbox:knarr.local`.
 - **Origins, in order.**
-  1. The `cli` origin (`knarr publish --scope user/cervator --targets owner-matrix ...`), which exists in Phase A.
+  1. The `cli` origin (`knarr publish --scope user/cervator --targets owner-matrix ...`), which exists in Phase A. It runs on the Knarr host, because a real send reads the bridge login there. A caller on Dionysus invokes it remotely over the tailnet (SSH to a forced command) and never receives the Matrix credential.
   2. An HTTP origin: `POST /publish` reachable only over the tailnet, authenticated with a bearer token scoped to `user/cervator`. Same `PublishRequest` body, same scope check before any send.
 - **Not allowed:** callers sending straight to Matrix with a bot token. Every owner message goes through scope authorization and the result store.
 
 ## Idempotency
 
-- Phase A already skips an identical request as a retry (`derive_request_id` over publisher, verb, parent and content).
+- Phase A skips an identical request as a retry once the first success is recorded (`derive_request_id` over publisher, verb, parent and content). Delivery is at-least-once: if the send succeeds and the result write fails, the CLI exits 2 with a warning, and a retry sends again.
+- The HTTP origin closes that gap by sending with a Matrix transaction id derived from the request id and publisher, so the homeserver drops a resent duplicate even when no record was written.
 - The HTTP origin adds an explicit `idempotency_key` field. When present it replaces the derived id, so a caller can retry a changed rendering of the same item without a duplicate.
 - Until then, callers put the date, ISO week or item id in the text, so a new day's hit list is a new request and a retried one is not.
 
 ## Source tags and cadence
 
-Requests from the vault side carry a `source` tag:
+Requests from the vault side carry a `source` tag. Phase A has nowhere to put one, so the first cut adds an optional `source` field to `PublishRequest` and a `--source` flag to `knarr publish`. The HTTP body carries the same field. The tag is recorded with the result and does not change routing.
 
 | Tag | When |
 |---|---|
@@ -59,8 +60,8 @@ The cadence belongs to the caller. Knarr does not schedule these.
 
 1. knarr#11 merges (publish Phase A).
 2. Declare `owner-matrix` and the owner room through the config reconciler; confirm the final names to the Borgr side.
-3. Owner notify over the CLI origin, exercised from Dionysus.
-4. The HTTP origin with bearer token and `idempotency_key`.
+3. The `source` field and `--source` flag; owner notify over the CLI origin, invoked from Dionysus.
+4. The HTTP origin with bearer token, `idempotency_key` and the derived transaction id.
 5. Digest, then inbox-zero, each designed in its own note when picked up.
 
 ## Open questions
