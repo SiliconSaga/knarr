@@ -1,6 +1,6 @@
 # Knarr design notes — the map
 
-Five design notes and three implementation plans describe Knarr. Each design owns one axis; together they are the specification. Read this page first to find the one you need and to see what is real versus designed.
+Six design notes and three implementation plans describe Knarr. Each design owns one axis; together they are the specification. Read this page first to find the one you need and to see what is real versus designed.
 
 | Note | Owns | Status (2026-11-27) |
 |---|---|---|
@@ -11,6 +11,7 @@ Five design notes and three implementation plans describe Knarr. Each design own
 | [Publish design (2026-08-30)](2026-08-30-knarr-publish-design.md) | **Outbound.** `PublisherInstance`, capability protocols (post / comment / message), origins (git-merge, cli, matrix), scope authorization, idempotent fan-out, `ObjectRef`, media handling, the volundr boundary | Design merged (knarr#9, 2026-09-01). **Phase A in review**: capability protocols, scope authorization, idempotent fan-out, Matrix and bridge-backed Discord publishers, `knarr publish`. Phases B–E open. Meta destinations gated on a developer-account verification loop outside our control. |
 | [Publish Phase A plan (2026-09-01)](2026-09-01-knarr-publish-phase-a-plan.md) | The task list for Phase A | Tasks 1–11 done; Task 12 (live validation) partly run, to finish on a rebuilt cluster. |
 | [Community reach design (2026-09-27)](2026-09-27-knarr-community-reach-design.md) | **Group C delivery.** Calendar as a source, platform-native membership (Google Group, WhatsApp) as the subscription store, digests as a `schedule` origin, the district scope model | Draft. Phase 0 needs no Knarr and is in flight on wopta.org. |
+| [Owner notify design (2026-11-27)](2026-11-27-knarr-owner-notify-design.md) | **Personal delivery.** The seam with the Borgr vault, the `user/` owner room, CLI then tailnet HTTP origin, `idempotency_key`, source tags; later a bridged-room digest and an inbox-zero room | Draft, agreed with Borgr PKM v2. Starts after Phase A merges. |
 
 ## What is running
 
@@ -18,9 +19,9 @@ As of 2026-08-29 on the Idunn k3d cluster (`k3d-nordri-test`): Synapse with its 
 
 ## How the notes relate
 
-- The original design names the layers and the topics. The source-identity note refines how content gets *in*; the publish note refines how content gets *out*; the community-reach note refines who is on the far end of *out* and adds the calendar as an *in*.
+- The original design names the layers and the topics. The source-identity note refines how content gets *in*; the publish note refines how content gets *out*; the community-reach note refines who is on the far end of *out* and adds the calendar as an *in*; the owner-notify note is the `user/` case of *out*, for one person.
 - A new platform is a new adapter on the inbound side and a new publisher on the outbound side, each declaring what it can do. Nothing in the pipeline changes for it.
-- The scope axis (`community/`, `group/`, `user/`) is shared by all four and is what keeps one community's credentials away from another's content.
+- The scope axis (`community/`, `group/`, `user/`) is shared by all of them and is what keeps one community's credentials away from another's content.
 
 ## Conventions
 
