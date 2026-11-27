@@ -40,6 +40,14 @@ def test_real_send_still_requires_a_password(tmp_path, monkeypatch):
     assert "KNARR_BRIDGE_PASSWORD" in result.output
 
 
+def test_corrupt_store_exits_2_with_a_delivery_warning(tmp_path, monkeypatch):
+    (tmp_path / "results.json").write_text("[]")
+    result = _run(tmp_path, monkeypatch, "--scope", "community/mtl",
+                  "--targets", "mtl-matrix", "--dry-run")
+    assert result.exit_code == 2
+    assert "may already have been delivered" in result.output
+
+
 def test_targets_that_name_nothing_are_rejected(tmp_path, monkeypatch):
     result = _run(tmp_path, monkeypatch, "--scope", "community/mtl",
                   "--targets", " , ", "--dry-run")

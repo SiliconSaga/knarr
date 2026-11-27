@@ -60,6 +60,13 @@ def test_corrupt_store_file_does_not_crash(tmp_path):
         raise AssertionError("a corrupt store must raise, not report empty")
 
 
+def test_non_object_root_is_corrupt(tmp_path):
+    path = tmp_path / "results.json"
+    path.write_text("[]")
+    with pytest.raises(StoreError):
+        JsonResultStore(path).succeeded("r1", "p1", "post")
+
+
 def test_malformed_entry_raises_rather_than_reading_as_absent(tmp_path):
     """A null or empty entry is corruption. Reading it as 'never sent' would
     make the fan-out republish."""

@@ -30,7 +30,7 @@ from src.publisher.schemas import (
     content_digest,
     derive_request_id,
 )
-from src.publisher.store import JsonResultStore
+from src.publisher.store import JsonResultStore, StoreError
 from src.watchers.schemas import Content
 
 from .bridge import BridgeManager
@@ -547,6 +547,15 @@ def publish(config_path, scope, targets, body, body_file, title, verb,
     except AuthorizationError as e:
         click.echo(f"  {_ACTION_ICONS['error']} {e}", err=True)
         sys.exit(1)
+    except (StoreError, OSError) as e:
+        # Fail closed: the store may have refused before a send or after one,
+        # so a message may already be out with no record of it.
+        click.echo(
+            f"  {_ACTION_ICONS['error']} result store failed: {e}. A message "
+            f"may already have been delivered; check the destination before "
+            f"re-running.", err=True,
+        )
+        sys.exit(2)
 
     for v in report.violations:
         click.echo(f"  {_ACTION_ICONS['error']} {v.publisher_id}: {v.reason}")

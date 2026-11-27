@@ -49,7 +49,7 @@ class JsonResultStore:
         if not self._path.exists():
             return {}
         try:
-            return json.loads(self._path.read_text(encoding="utf-8"))
+            data = json.loads(self._path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             # Deliberately fatal. Reporting "nothing recorded" for an
             # unreadable store would make the fan-out repost everything it
@@ -58,6 +58,13 @@ class JsonResultStore:
                 f"corrupt result store at {self._path}: {exc}. Refusing to "
                 f"treat it as empty, which would republish."
             ) from exc
+        if not isinstance(data, dict):
+            raise StoreError(
+                f"corrupt result store at {self._path}: root is "
+                f"{type(data).__name__}, not an object. Refusing to treat it "
+                f"as empty, which would republish."
+            )
+        return data
 
     def record(self, request_id: str, publisher_id: str, verb: str,
                ref: ObjectRef) -> None:
