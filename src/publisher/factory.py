@@ -20,6 +20,13 @@ def build_publishers(configs: list[PublisherConfig], client) -> list:
     built = []
     for cfg in configs:
         pair = (cfg.platform, cfg.surface)
+        if cfg.credentials_ref is not None:
+            # Phase A sends everything through the one bridge login; silently
+            # using it would publish under an identity the config did not ask for.
+            raise UnsupportedPublisher(
+                f"publisher '{cfg.id}': credentials_ref is not supported yet; "
+                f"Phase A publishes through the shared bridge account"
+            )
         if pair == ("matrix", "room"):
             built.append(MatrixPublisher(
                 id=cfg.id, scope=cfg.scope, room_id=cfg.target, client=client,

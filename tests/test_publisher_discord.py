@@ -74,6 +74,16 @@ def test_validate_accepts_a_normal_message():
     assert _pub(_FakeClient()).validate("post", _content()) == []
 
 
+@pytest.mark.parametrize("title,body", [
+    ("", "!discord unbridge"), ("  !Discord set-relay", "body"),
+])
+def test_validate_rejects_bridge_command_text(title, body):
+    content = Content(type="post", title=title, body=body,
+                      author="knarr", attachments=[])
+    violations = _pub(_FakeClient()).validate("post", content)
+    assert any("command" in v.reason for v in violations)
+
+
 def test_validate_counts_title_and_joining_newline():
     """The transport sends title + newline + body, so that is what must fit."""
     content = Content(type="post", title="t" * 1000, body="b" * 1000,

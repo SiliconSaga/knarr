@@ -44,6 +44,19 @@ class PublisherRegistry:
                 f"{sorted(capabilities_of(publisher)) or 'nothing'}"
             )
 
+        # A reply goes where the target publisher sends, so its parent must
+        # live there too, or it lands in the wrong room.
+        parent = target.parent
+        if parent is not None and (
+            parent.publisher_id != publisher.id
+            or parent.platform != publisher.platform
+            or parent.surface != publisher.surface
+        ):
+            raise AuthorizationError(
+                f"'{publisher.id}' cannot reply to {parent.publisher_id} "
+                f"{parent.platform}/{parent.surface} object {parent.object_id}"
+            )
+
         return publisher
 
     def authorize_all(self, targets: list[Target], request_scope: str) -> list:
@@ -52,4 +65,15 @@ class PublisherRegistry:
         Whole-request rather than per-target on purpose: a request naming a
         destination it has no business touching is not partially trustworthy.
         """
+        # Results are keyed by (request, publisher, verb), so a second target
+        # with the same pair would be skipped as already done.
+        seen = set()
+        for t in targets:
+            key = (t.publisher_id, t.verb)
+            if key in seen:
+                raise AuthorizationError(
+                    f"'{t.publisher_id}' is targeted twice for {t.verb}; "
+                    f"send separate requests"
+                )
+            seen.add(key)
         return [self.resolve(t, request_scope) for t in targets]

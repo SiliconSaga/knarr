@@ -14,6 +14,7 @@ Configuration via environment variables:
 """
 
 import asyncio
+import logging
 import os
 import sys
 from datetime import UTC, datetime
@@ -481,6 +482,8 @@ def publish(config_path, scope, targets, body, body_file, title, verb,
     Approval is that you ran this command. With one operator that is a
     complete and honest answer, and it is recorded as exactly that.
     """
+    # fan_out reports dry-run previews and sent event ids at INFO.
+    logging.basicConfig(level=logging.INFO, format="  %(message)s")
     if not body and not body_file:
         click.echo("Provide --body or --body-file", err=True)
         sys.exit(1)

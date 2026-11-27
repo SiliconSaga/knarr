@@ -2,7 +2,7 @@ import pytest
 
 from src.publisher.protocols import Constraints
 from src.publisher.registry import AuthorizationError, PublisherRegistry
-from src.publisher.schemas import PublishResult, Target
+from src.publisher.schemas import ObjectRef, PublishResult, Target
 from src.watchers.schemas import Content
 
 
@@ -32,11 +32,36 @@ class _FakePublisher:
         self.credentials_resolved = True
 
 
-def _target(pid="p1", verb="post"):
+def _target(pid="p1", verb="post", parent=None):
     return Target(
-        publisher_id=pid, verb=verb,
+        publisher_id=pid, verb=verb, parent=parent,
         content=Content(type="post", title="", body="b", author="a", attachments=[]),
     )
+
+
+def _ref(pid="p1", platform="fake", surface="feed"):
+    return ObjectRef(publisher_id=pid, platform=platform, surface=surface,
+                     object_type="post", object_id="$e")
+
+
+def test_accepts_a_parent_from_the_same_publisher():
+    reg = PublisherRegistry([_FakePublisher("p1", "community/mtl", verbs=("message",))])
+    assert reg.resolve(_target(verb="message", parent=_ref()), "community/mtl")
+
+
+@pytest.mark.parametrize("parent", [
+    _ref(pid="p2"), _ref(platform="matrix"), _ref(surface="room"),
+])
+def test_rejects_a_parent_from_another_destination(parent):
+    reg = PublisherRegistry([_FakePublisher("p1", "community/mtl", verbs=("message",))])
+    with pytest.raises(AuthorizationError, match="cannot reply"):
+        reg.resolve(_target(verb="message", parent=parent), "community/mtl")
+
+
+def test_authorize_all_rejects_a_duplicate_publisher_and_verb():
+    reg = PublisherRegistry([_FakePublisher("p1", "community/mtl")])
+    with pytest.raises(AuthorizationError, match="twice"):
+        reg.authorize_all([_target("p1"), _target("p1")], "community/mtl")
 
 
 def test_resolves_a_known_publisher():

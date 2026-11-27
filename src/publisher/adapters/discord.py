@@ -29,6 +29,10 @@ from src.watchers.schemas import Content
 # an over-long message is truncated or dropped downstream where we cannot see.
 _DISCORD_MAX_CHARS = 2000
 
+# The bridge runs messages starting with its prefix as commands, and we send
+# as its operator account, so such content would never reach Discord.
+_BRIDGE_COMMAND_PREFIX = "!discord"
+
 
 class DiscordPublisher:
     platform = "discord"
@@ -51,7 +55,14 @@ class DiscordPublisher:
         violations = self._transport.validate(verb, content, media)
         # Count what is actually sent: the transport joins title and body
         # with a newline.
-        length = len("\n".join(p for p in (content.title, content.body) if p))
+        text = "\n".join(p for p in (content.title, content.body) if p)
+        if text.lstrip().lower().startswith(_BRIDGE_COMMAND_PREFIX):
+            violations.append(Violation(
+                publisher_id=self.id,
+                reason=f"text starts with '{_BRIDGE_COMMAND_PREFIX}', which "
+                       f"the bridge would run as a command",
+            ))
+        length = len(text)
         if length > _DISCORD_MAX_CHARS:
             violations.append(Violation(
                 publisher_id=self.id,
