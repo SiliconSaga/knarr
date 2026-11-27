@@ -1,5 +1,7 @@
+import pytest
+
 from src.publisher.schemas import ObjectRef
-from src.publisher.store import JsonResultStore
+from src.publisher.store import JsonResultStore, StoreError
 
 
 def _ref(object_id="$1"):
@@ -56,3 +58,14 @@ def test_corrupt_store_file_does_not_crash(tmp_path):
         assert "corrupt" in str(exc).lower()
     else:
         raise AssertionError("a corrupt store must raise, not report empty")
+
+
+def test_malformed_entry_raises_rather_than_reading_as_absent(tmp_path):
+    """A null or empty entry is corruption. Reading it as 'never sent' would
+    make the fan-out republish."""
+    path = tmp_path / "results.json"
+    path.write_text('{"r1|p1|post": null, "r1|p2|post": {}}')
+    store = JsonResultStore(path)
+    for pid in ("p1", "p2"):
+        with pytest.raises(StoreError):
+            store.succeeded("r1", pid, "post")

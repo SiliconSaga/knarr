@@ -51,6 +51,11 @@ async def fan_out(
             continue
 
         violations = publisher.validate(target.verb, target.content, target.media)
+        if target.verb != "post" and target.parent is None:
+            violations.append(Violation(
+                publisher_id=publisher.id,
+                reason=f"{target.verb} needs a parent to reply to",
+            ))
         if violations:
             report.violations.extend(violations)
             logger.warning(

@@ -4,6 +4,13 @@
 **Status:** Implemented (knarr#2, 2026-04-28). Map of all Knarr notes: [README](README.md).
 **Component:** knarr
 
+> **Where the shipped reconciler differs from this design (checked 2026-11-27):**
+> - Watcher settings are reported as `noop` ("apply not yet implemented"). They don't patch the Deployment.
+> - `knarr config apply` doesn't log the bridge into Discord. That stays `knarr bridge login-bot`, a manual step.
+> - If a managed room loses its alias, it isn't recovered automatically. No `org.knarr.managed` marker scan runs before create.
+>
+> The [plan](2026-04-25-config-reconciler-plan.md) is kept as written, as the record of how knarr#2 was built. Its sample code isn't maintained against `src/admin/reconciler.py`.
+
 ---
 
 ## Overview

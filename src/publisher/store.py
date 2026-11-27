@@ -70,8 +70,18 @@ class JsonResultStore:
 
     def get(self, request_id: str, publisher_id: str,
             verb: str) -> ObjectRef | None:
-        raw = self._load().get(_key(request_id, publisher_id, verb))
-        return ObjectRef(**raw) if raw else None
+        data = self._load()
+        key = _key(request_id, publisher_id, verb)
+        if key not in data:
+            return None
+        # A present-but-unreadable entry is corruption, not absence: reading
+        # it as "never sent" would republish.
+        try:
+            return ObjectRef(**data[key])
+        except TypeError as exc:
+            raise StoreError(
+                f"malformed entry {key!r} in {self._path}: {exc}"
+            ) from exc
 
     def succeeded(self, request_id: str, publisher_id: str, verb: str) -> bool:
         return self.get(request_id, publisher_id, verb) is not None

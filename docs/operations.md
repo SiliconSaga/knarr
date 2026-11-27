@@ -161,7 +161,13 @@ Re-running an identical command republishes nothing: `request_id` is derived fro
 
 **Results live in `.knarr/publish-results.json`** by default (`--store` to override). Deleting that file makes the next run republish everything, because it is the only record of what already landed.
 
-**`--targets` names publisher ids, not platforms.** A target whose scope does not match `--scope` is refused, and refusal rejects the whole request rather than the one target.
+**`--targets` names publisher ids, not platforms.** A target whose scope does not match `--scope` is refused, and refusal rejects the whole request rather than the one target. The scope check runs before any credential is read, and `--dry-run` needs no credentials at all. A dry run doesn't contact the homeserver, so a wrong room alias only shows up on the first real send.
+
+**Retries are safe; concurrent runs are not.** Delivery is at-least-once:
+- Each run logs in fresh, so Matrix's own transaction-id dedup doesn't carry across runs. A crash between the send and the record can produce one duplicate on the retry.
+- Two `knarr publish` runs of the same request at the same moment can both send.
+
+Run one publisher process at a time. The HTTP origin planned for scheduled callers closes both gaps.
 
 ### What the Discord destination actually guarantees
 

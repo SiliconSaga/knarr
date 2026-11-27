@@ -467,8 +467,9 @@ def admin_token():
 @click.option("--body-file", type=click.Path(exists=True), default=None,
               help="Read the body from a file")
 @click.option("--title", default="", help="Optional title")
-@click.option("--verb", default="post",
-              type=click.Choice(["post", "comment", "message"]))
+# Only `post` until the CLI can name a parent: comment and message reply to
+# something, and there is no flag for what.
+@click.option("--verb", default="post", type=click.Choice(["post"]))
 @click.option("--dry-run", is_flag=True,
               help="Resolve, authorize and validate, but send nothing")
 @click.option("--store", "store_path", default=".knarr/publish-results.json",
@@ -493,26 +494,36 @@ def publish(config_path, scope, targets, body, body_file, title, verb,
         click.echo(f"Config error: {e}", err=True)
         sys.exit(1)
 
-    def _no_password():
-        click.echo("KNARR_BRIDGE_PASSWORD is required", err=True)
-        sys.exit(1)
-
-    client = client_from_env(
-        "KNARR_BRIDGE_USER", "KNARR_BRIDGE_PASSWORD", "knarr", _no_password,
-    )
-
-    try:
-        publishers = build_publishers(config.publishers, client)
-    except UnsupportedPublisher as e:
-        click.echo(f"{e}", err=True)
-        sys.exit(1)
-
     content = Content(type="post", title=title, body=body,
                       author="knarr", attachments=[])
     target_list = [
         Target(publisher_id=pid.strip(), verb=verb, content=content)
         for pid in targets.split(",") if pid.strip()
     ]
+    if not target_list:
+        click.echo("--targets names no publisher ids", err=True)
+        sys.exit(1)
+
+    # Authorize against client-less publishers first, so a wrong scope is
+    # refused before any credential is read. A dry run never sends, so it
+    # never needs one at all.
+    try:
+        PublisherRegistry(build_publishers(config.publishers, None)) \
+            .authorize_all(target_list, scope)
+    except UnsupportedPublisher as e:
+        click.echo(f"{e}", err=True)
+        sys.exit(1)
+    except AuthorizationError as e:
+        click.echo(f"  {_ACTION_ICONS['error']} {e}", err=True)
+        sys.exit(1)
+
+    client = None
+    if not dry_run:
+        client = client_from_env(
+            "KNARR_BRIDGE_USER", "KNARR_BRIDGE_PASSWORD", "knarr",
+            _abort_missing("KNARR_BRIDGE_PASSWORD"),
+        )
+    publishers = build_publishers(config.publishers, client)
     request = PublishRequest(
         request_id=derive_request_id(scope, target_list, content_digest(content)),
         scope=scope,

@@ -55,6 +55,20 @@ def test_request_id_changes_with_scope():
         derive_request_id("group/pta", [_target()], "d")
 
 
+def test_request_id_changes_with_parent():
+    """A reply to one post is not a retry of a reply to another."""
+    def reply(object_id):
+        parent = None if object_id is None else ObjectRef(
+            publisher_id="p", platform="matrix", surface="room",
+            object_type="post", object_id=object_id,
+        )
+        return Target(publisher_id="p", verb="comment", content=_content(),
+                      parent=parent)
+
+    ids = {derive_request_id("s", [reply(oid)], "d") for oid in (None, "$a", "$b")}
+    assert len(ids) == 3
+
+
 def test_violation_carries_the_target_it_belongs_to():
     v = Violation(publisher_id="mtl-instagram", reason="media required")
     assert "media" in v.reason

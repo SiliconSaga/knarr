@@ -54,6 +54,30 @@ def _target(pid):
     )
 
 
+class _Commenter(_Pub):
+    async def comment(self, parent, content, media=None):
+        self.calls += 1
+        return PublishResult(ok=True, ref=None, error=None)
+
+
+@pytest.mark.asyncio
+async def test_parentless_comment_is_blocked_not_raised(tmp_path):
+    """A reply with nothing to reply to is a per-target violation; the other
+    targets still go out."""
+    c, p = _Commenter("c"), _Pub("p")
+    orphan = Target(
+        publisher_id="c", verb="comment",
+        content=Content(type="post", title="", body="b", author="a", attachments=[]),
+    )
+    report = await fan_out(
+        _request([orphan, _target("p")]), PublisherRegistry([c, p]),
+        JsonResultStore(tmp_path / "s.json"),
+    )
+    assert c.calls == 0
+    assert p.calls == 1
+    assert [v.publisher_id for v in report.violations] == ["c"]
+
+
 @pytest.mark.asyncio
 async def test_publishes_every_target(tmp_path):
     a, b = _Pub("a"), _Pub("b")

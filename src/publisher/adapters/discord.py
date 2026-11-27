@@ -49,7 +49,9 @@ class DiscordPublisher:
     def validate(self, verb: str, content: Content,
                  media: MediaRef | None = None) -> list[Violation]:
         violations = self._transport.validate(verb, content, media)
-        length = len(content.title) + len(content.body)
+        # Count what is actually sent: the transport joins title and body
+        # with a newline.
+        length = len("\n".join(p for p in (content.title, content.body) if p))
         if length > _DISCORD_MAX_CHARS:
             violations.append(Violation(
                 publisher_id=self.id,

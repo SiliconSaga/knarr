@@ -72,3 +72,10 @@ def test_validate_rejects_over_discord_message_limit():
 
 def test_validate_accepts_a_normal_message():
     assert _pub(_FakeClient()).validate("post", _content()) == []
+
+
+def test_validate_counts_title_and_joining_newline():
+    """The transport sends title + newline + body, so that is what must fit."""
+    content = Content(type="post", title="t" * 1000, body="b" * 1000,
+                      author="knarr", attachments=[])
+    assert _pub(_FakeClient()).validate("post", content) != []

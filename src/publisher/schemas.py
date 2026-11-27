@@ -90,7 +90,14 @@ def derive_request_id(scope: str, targets: list[Target], digest: str) -> str:
     of republishing it. Target order is sorted out because order carries no
     meaning — leaving it in would make a re-resolved request look new.
     """
-    parts = sorted(f"{t.publisher_id}:{t.verb}" for t in targets)
+    # The parent is part of identity: a reply to one post is not a retry of a
+    # reply to another. "-" marks no parent, which no object id can equal.
+    parts = sorted(
+        f"{t.publisher_id}:{t.verb}:"
+        + (f"{t.parent.platform}/{t.parent.surface}/{t.parent.object_id}"
+           if t.parent else "-")
+        for t in targets
+    )
     blob = json.dumps(
         {"scope": scope, "targets": parts, "digest": digest},
         sort_keys=True, separators=(",", ":"),
