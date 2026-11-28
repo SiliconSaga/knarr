@@ -1,3 +1,5 @@
+import pytest
+
 from src.publisher.schemas import (
     MediaRef,
     ObjectRef,
@@ -92,3 +94,33 @@ def test_publish_request_holds_targets():
         origin="cli", approved_by="cervator", approved_at="2026-09-01T00:00:00Z",
     )
     assert req.targets[0].publisher_id == "mtl-matrix"
+
+
+def _request(source):
+    return PublishRequest(
+        request_id="r1", scope="user/cervator", targets=[_target()],
+        origin="cli", approved_by="cervator", approved_at="2026-09-01T00:00:00Z",
+        source=source,
+    )
+
+
+def test_source_defaults_to_none():
+    req = PublishRequest(
+        request_id="r1", scope="community/mtl", targets=[_target()],
+        origin="cli", approved_by="cervator", approved_at="2026-09-01T00:00:00Z",
+    )
+    assert req.source is None
+
+
+@pytest.mark.parametrize("source", ["borgr/hit-list", "borgr/run-failed", "cron", "a.b/c_d"])
+def test_well_formed_sources_are_accepted(source):
+    assert _request(source).source == source
+
+
+@pytest.mark.parametrize("source", [
+    "", "Borgr/hit-list", "borgr hit-list", "borgr//x", "/borgr", "borgr/",
+    "borgr/\nx", "x" * 65,
+])
+def test_malformed_sources_are_rejected(source):
+    with pytest.raises(ValueError, match="source"):
+        _request(source)

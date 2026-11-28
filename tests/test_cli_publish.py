@@ -48,6 +48,29 @@ def test_corrupt_store_exits_2_with_a_delivery_warning(tmp_path, monkeypatch):
     assert "may already have been delivered" in result.output
 
 
+def test_owner_inbox_dry_run_with_a_source(tmp_path, monkeypatch):
+    result = _run(tmp_path, monkeypatch, "--scope", "user/cervator",
+                  "--targets", "owner-matrix", "--source", "borgr/hit-list",
+                  "--dry-run")
+    assert result.exit_code == 0, result.output
+    assert "source borgr/hit-list" in result.output
+
+
+def test_owner_inbox_refuses_a_community_scope(tmp_path, monkeypatch):
+    result = _run(tmp_path, monkeypatch, "--scope", "community/mtl",
+                  "--targets", "owner-matrix", "--dry-run")
+    assert result.exit_code == 1
+    assert "scope mismatch" in result.output
+
+
+def test_malformed_source_is_rejected(tmp_path, monkeypatch):
+    result = _run(tmp_path, monkeypatch, "--scope", "user/cervator",
+                  "--targets", "owner-matrix", "--source", "Borgr Hit List",
+                  "--dry-run")
+    assert result.exit_code == 1
+    assert "source" in result.output
+
+
 def test_targets_that_name_nothing_are_rejected(tmp_path, monkeypatch):
     result = _run(tmp_path, monkeypatch, "--scope", "community/mtl",
                   "--targets", " , ", "--dry-run")

@@ -9,9 +9,11 @@ users:
   knarr: "@knarr:knarr.local"
   router: "@knarr-router:knarr.local"
   bridge_bot: "@discordbot:knarr.local"
+  cervator: "@cervator:knarr.local"
 
 communities:
   - config/test.yaml
+  - config/owner.yaml
 
 instances:
   - id: reddit-terasology
@@ -58,3 +60,11 @@ publishers:
     # Delivery is confirmed by Matrix, not by Discord — see the adapter
     # docstring for what the bridge cannot express.
     target: "#bridge-test:knarr.local"
+
+  # The owner's inbox; Borgr sends here with --source borgr/<tag>.
+  - id: owner-matrix
+    platform: matrix
+    surface: room
+    access_path: api
+    scope: user/cervator
+    target: "#cervator-inbox:knarr.local"

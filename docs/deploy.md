@@ -48,6 +48,9 @@ kubectl apply -f k8s/synapse/
 # 6. Create admin user
 kubectl exec -n knarr deploy/synapse -- register_new_matrix_user \
   -c /config/homeserver.yaml -u admin -p <password> -a http://localhost:8008
+# The owner account: config/owner.yaml invites it to #cervator-inbox.
+kubectl exec -n knarr deploy/synapse -- register_new_matrix_user \
+  -c /config/homeserver.yaml -u cervator -p <password> --no-admin http://localhost:8008
 
 # 7. Kafka (takes ~3 min)
 kubectl apply -f k8s/kafka-claim.yaml

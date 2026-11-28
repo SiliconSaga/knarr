@@ -169,6 +169,19 @@ Re-running an identical command republishes nothing: `request_id` is derived fro
 
 Run one publisher process at a time. The HTTP origin planned for scheduled callers closes both gaps.
 
+### Owner notify
+
+`owner-matrix` posts to `#cervator-inbox`, the owner's personal room (declared in `config/owner.yaml`, scope `user/cervator`). Callers tag what they send with `--source`:
+
+```bash
+python3 -m src.admin.cli publish \
+  --scope user/cervator --targets owner-matrix \
+  --source borgr/hit-list \
+  --body "Hit list 2026-11-28: ..."
+```
+
+The tag is recorded with the result and never changes routing or the request id, so put the date or item id in the body to make each day's message a new request. Tags are lowercase `/`-separated segments; the Borgr tags are listed in [the owner-notify design](plans/2026-11-27-knarr-owner-notify-design.md).
+
 ### What the Discord destination actually guarantees
 
 `mtl-discord` publishes through the mautrix-discord bridge, so **delivery is confirmed by Matrix, not by Discord**. A successful result means the bridge accepted the message. If the bridge is logged out, this reports success for something Discord never saw — check the bridge before trusting a Discord publish. The adapter docstring in `src/publisher/adapters/discord.py` lists the rest of what the bridge cannot express (no embeds, threads, DMs, edits or deletes).

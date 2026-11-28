@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import asdict, dataclass
 
 from src.watchers.schemas import Content
@@ -74,6 +75,28 @@ class PublishRequest:
     approved_by: str
     approved_at: str
     media: MediaRef | None = None
+    # Who asked, e.g. "borgr/hit-list". Recorded with the result; it never
+    # changes routing and is not part of the request id.
+    source: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.source is not None:
+            validate_source(self.source)
+
+
+# Lowercase path segments, e.g. "borgr/hit-list". Narrow on purpose: the tag
+# lands in result records and log lines, so no spaces or control characters.
+_SOURCE_RE = re.compile(r"[a-z0-9][a-z0-9._-]*(/[a-z0-9][a-z0-9._-]*)*")
+_SOURCE_MAX = 64
+
+
+def validate_source(source: str) -> None:
+    """Raise ValueError unless ``source`` is a well-formed source tag."""
+    if len(source) > _SOURCE_MAX or not _SOURCE_RE.fullmatch(source):
+        raise ValueError(
+            f"source {source!r} must be lowercase segments separated by '/', "
+            f"e.g. 'borgr/hit-list', at most {_SOURCE_MAX} characters"
+        )
 
 
 def content_digest(content: Content) -> str:

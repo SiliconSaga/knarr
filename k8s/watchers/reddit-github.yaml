@@ -29,6 +29,7 @@ data:
       knarr: "@knarr:knarr.local"
       router: "@knarr-router:knarr.local"
       bridge_bot: "@discordbot:knarr.local"
+      cervator: "@cervator:knarr.local"
 
     # Path is relative to knarr.yaml's directory inside the pod (/etc/knarr/).
     # Both files are flat keys of the same ConfigMap, so this is the bare
@@ -80,6 +81,13 @@ data:
         access_path: bridge
         scope: community/mtl
         target: "#bridge-test:knarr.local"
+
+      - id: owner-matrix
+        platform: matrix
+        surface: room
+        access_path: api
+        scope: user/cervator
+        target: "#cervator-inbox:knarr.local"
 
   # Carried alongside under the same /etc/knarr/ mount so load_config()'s
   # community_loader resolves `test.yaml` relative to knarr.yaml's directory.

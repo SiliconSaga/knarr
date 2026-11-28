@@ -1,7 +1,7 @@
 # Knarr Owner Notify Design: the personal inbox room, and the seam with the Borgr vault
 
 **Date:** 2026-11-27
-**Status:** Draft. Agreed with the Borgr PKM v2 design; implementation starts after knarr#11 (publish Phase A) merges.
+**Status:** In progress. Agreed with the Borgr PKM v2 design. Steps 2 and 3 of the order of work are in code; applying the config and the first real send wait on the cluster.
 **Component:** knarr
 **Builds on:** [Publish Design](2026-08-30-knarr-publish-design.md) (PublisherInstance, scope authorization, origins, idempotent fan-out) · [Source-Identity Design](2026-05-30-knarr-source-identity-design.md) (scope axis, reply-from-Matrix)
 **Related:** the Borgr PKM v2 workflow (in the Borgr vault) and the Muninn and Huginn Thunderbird designs (realm-siliconsaga `docs/plans`)
@@ -20,7 +20,7 @@ The PKM v2 design splits personal organizing three ways: the workflow lives in t
 
 ## Owner notify
 
-- **Destination.** A personal room under scope `user/cervator`, reached by a Matrix publisher. Tentative names, fixed when the reconciler declares them: publisher `owner-matrix`, room `#cervator-inbox:knarr.local`.
+- **Destination.** A personal room under scope `user/cervator`, reached by a Matrix publisher: publisher `owner-matrix`, room `#cervator-inbox:knarr.local`, read by `@cervator:knarr.local`. Declared in `config/knarr.yaml` and `config/owner.yaml`.
 - **Origins, in order.**
   1. The `cli` origin (`knarr publish --scope user/cervator --targets owner-matrix ...`), which exists in Phase A. It runs on the Knarr host, because a real send reads the bridge login there. A caller on Dionysus invokes it remotely over the tailnet (SSH to a forced command) and never receives the Matrix credential.
   2. An HTTP origin: `POST /publish` reachable only over the tailnet, authenticated with a bearer token scoped to `user/cervator`. Same `PublishRequest` body, same scope check before any send.
