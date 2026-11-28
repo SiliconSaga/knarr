@@ -30,6 +30,7 @@ from src.publisher.schemas import (
     Target,
     content_digest,
     derive_request_id,
+    validate_source,
 )
 from src.publisher.store import JsonResultStore, StoreError
 from src.watchers.schemas import Content
@@ -475,8 +476,10 @@ def admin_token():
               help="Resolve, authorize and validate, but send nothing")
 @click.option("--store", "store_path", default=".knarr/publish-results.json",
               help="Where publish results are recorded")
+@click.option("--source", default=None,
+              help="Who is asking, e.g. borgr/hit-list; recorded with the result")
 def publish(config_path, scope, targets, body, body_file, title, verb,
-            dry_run, store_path):
+            dry_run, store_path, source):
     """Publish one piece of content to several destinations.
 
     Approval is that you ran this command. With one operator that is a
@@ -487,6 +490,12 @@ def publish(config_path, scope, targets, body, body_file, title, verb,
     if not body and not body_file:
         click.echo("Provide --body or --body-file", err=True)
         sys.exit(1)
+    if source is not None:
+        try:
+            validate_source(source)
+        except ValueError as e:
+            click.echo(f"{e}", err=True)
+            sys.exit(1)
     if body_file:
         body = Path(body_file).read_text(encoding="utf-8")
 
@@ -534,11 +543,13 @@ def publish(config_path, scope, targets, body, body_file, title, verb,
         origin="cli",
         approved_by=f"cli:{os.environ.get('USER', 'unknown')}",
         approved_at=datetime.now(UTC).isoformat(),
+        source=source,
     )
 
     click.echo(
         f"request {request.request_id}  scope {scope}  "
         f"{len(target_list)} target(s)"
+        f"{f'  source {source}' if source else ''}"
         f"{'  [DRY RUN]' if dry_run else ''}"
     )
 

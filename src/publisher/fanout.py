@@ -86,7 +86,8 @@ async def fan_out(
 
         # Recorded before the next target is attempted, so an interruption
         # mid-fan-out still leaves an accurate account of what landed.
-        store.record(request.request_id, publisher.id, target.verb, result.ref)
+        store.record(request.request_id, publisher.id, target.verb, result.ref,
+                     source=request.source)
         report.published += 1
         logger.info(
             "%s/%s published as %s",

@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from src.publisher.fanout import fan_out
@@ -139,6 +141,16 @@ async def test_validation_failure_blocks_that_target(tmp_path):
                            JsonResultStore(tmp_path / "s.json"))
     assert bad.calls == 0
     assert len(report.violations) == 1
+
+
+@pytest.mark.asyncio
+async def test_source_is_recorded_with_each_result(tmp_path):
+    a = _Pub("a")
+    path = tmp_path / "s.json"
+    req = _request([_target("a")])
+    req.source = "borgr/hit-list"
+    await fan_out(req, PublisherRegistry([a]), JsonResultStore(path))
+    assert json.loads(path.read_text())["r1|a|post"]["source"] == "borgr/hit-list"
 
 
 @pytest.mark.asyncio

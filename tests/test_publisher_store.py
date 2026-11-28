@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from src.publisher.schemas import ObjectRef
@@ -67,12 +69,30 @@ def test_non_object_root_is_corrupt(tmp_path):
         JsonResultStore(path).succeeded("r1", "p1", "post")
 
 
+def test_source_is_recorded_beside_the_ref(tmp_path):
+    path = tmp_path / "results.json"
+    store = JsonResultStore(path)
+    store.record("r1", "p1", "post", _ref("$1"), source="borgr/hit-list")
+    assert json.loads(path.read_text())["r1|p1|post"]["source"] == "borgr/hit-list"
+    assert store.get("r1", "p1", "post") == _ref("$1")
+
+
+def test_entries_without_a_source_still_read_back(tmp_path):
+    """Stores written before the source field existed must keep working."""
+    path = tmp_path / "results.json"
+    path.write_text(json.dumps({"r1|p1|post": {
+        "publisher_id": "p1", "platform": "matrix", "surface": "room",
+        "object_type": "post", "object_id": "$old"}}))
+    assert JsonResultStore(path).get("r1", "p1", "post").object_id == "$old"
+
+
 def test_malformed_entry_raises_rather_than_reading_as_absent(tmp_path):
     """A null or empty entry is corruption. Reading it as 'never sent' would
     make the fan-out republish."""
     path = tmp_path / "results.json"
-    path.write_text('{"r1|p1|post": null, "r1|p2|post": {}}')
+    path.write_text('{"r1|p1|post": null, "r1|p2|post": {}, '
+                    '"r1|p3|post": {"source": "borgr/hit-list"}}')
     store = JsonResultStore(path)
-    for pid in ("p1", "p2"):
+    for pid in ("p1", "p2", "p3"):
         with pytest.raises(StoreError):
             store.succeeded("r1", pid, "post")

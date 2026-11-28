@@ -27,12 +27,17 @@ class StoreError(Exception):
 
 class ResultStore(Protocol):
     def record(self, request_id: str, publisher_id: str, verb: str,
-               ref: ObjectRef) -> None: ...
+               ref: ObjectRef, source: str | None = None) -> None: ...
 
     def get(self, request_id: str, publisher_id: str,
             verb: str) -> ObjectRef | None: ...
 
     def succeeded(self, request_id: str, publisher_id: str, verb: str) -> bool: ...
+
+
+# Stored beside the ObjectRef fields. Entries written before it existed have
+# no such key and still read back.
+_SOURCE_FIELD = "source"
 
 
 def _key(request_id: str, publisher_id: str, verb: str) -> str:
@@ -67,9 +72,12 @@ class JsonResultStore:
         return data
 
     def record(self, request_id: str, publisher_id: str, verb: str,
-               ref: ObjectRef) -> None:
+               ref: ObjectRef, source: str | None = None) -> None:
         data = self._load()
-        data[_key(request_id, publisher_id, verb)] = asdict(ref)
+        entry = asdict(ref)
+        if source is not None:
+            entry[_SOURCE_FIELD] = source
+        data[_key(request_id, publisher_id, verb)] = entry
         self._path.parent.mkdir(parents=True, exist_ok=True)
         # Write via a uniquely named temp file so an interrupted write cannot
         # truncate the store, and two writers never share one temp path.
@@ -88,8 +96,12 @@ class JsonResultStore:
             return None
         # A present-but-unreadable entry is corruption, not absence: reading
         # it as "never sent" would republish.
+        entry = data[key]
         try:
-            return ObjectRef(**data[key])
+            if not isinstance(entry, dict):
+                raise TypeError(f"entry is {type(entry).__name__}, not an object")
+            return ObjectRef(**{k: v for k, v in entry.items()
+                                if k != _SOURCE_FIELD})
         except TypeError as exc:
             raise StoreError(
                 f"malformed entry {key!r} in {self._path}: {exc}"
