@@ -39,7 +39,7 @@ Requests from the vault side carry a `source` tag. Phase A has nowhere to put on
 
 | Tag | When |
 |---|---|
-| `borgr/hit-list` | Daily, morning |
+| `borgr/hit-list` | Daily, morning; at most five highlights, the full list stays in the vault |
 | `borgr/review-queue` | Weekly, only when the queue is non-empty |
 | `borgr/urgent` | Ad hoc |
 | `borgr/run-failed` | When a scheduled vault run fails |
@@ -54,7 +54,7 @@ The cadence belongs to the caller. Knarr does not schedule these.
 ## Later, not in the first cut
 
 - **Personal digest of bridged rooms.** Discord first, then WhatsApp, produced by Knarr into the owner room. The vault may read the digest output but never the rooms.
-- **Inbox-zero room.** Each item is a message; a reaction or reply completes it, and the completion flows back to the vault. This needs the Matrix-to-Knarr return path from the source-identity design's reply-from-Matrix work, with the item id as the correlation id. "Erindi" is a possible name for this, parked until it exists.
+- **Inbox-zero room.** Each item is a message; a reaction or reply completes it, and the completion flows back to the vault. This needs the Matrix-to-Knarr return path from the source-identity design's reply-from-Matrix work, with the item id as the correlation id. Emoji reactions are the intended workflow, as long as they leave an audit trail: the vault records each applied reaction as a commit, so the return event must carry the item id, the reaction, who reacted and when. "Erindi" is a possible name for this, parked until it exists.
 
 ## Order of work
 
