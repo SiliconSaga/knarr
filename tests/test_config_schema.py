@@ -537,6 +537,79 @@ def test_validate_requires_github_repos():
     )
 
 
+VALID_PUBLISHER = {
+    "id": "mtl-matrix",
+    "platform": "matrix",
+    "surface": "room",
+    "access_path": "api",
+    "scope": "community/mtl",
+    "target": "#social-watch:knarr.local",
+}
+
+
+def test_parses_publishers_block():
+    cfg = {**VALID_INDEX, "publishers": [VALID_PUBLISHER]}
+    parsed = KnarrConfig.from_dict(cfg, community_loader=lambda _: VALID_COMMUNITY)
+    assert len(parsed.publishers) == 1
+    pub = parsed.publishers[0]
+    assert pub.id == "mtl-matrix"
+    assert pub.surface == "room"
+    assert pub.credentials_ref is None
+
+
+def test_publishers_defaults_to_empty():
+    parsed = KnarrConfig.from_dict(VALID_INDEX, community_loader=lambda _: VALID_COMMUNITY)
+    assert parsed.publishers == []
+
+
+def test_parse_rejects_non_list_publishers():
+    bad = {**VALID_INDEX, "publishers": "nope"}
+    with pytest.raises(ConfigError, match="publishers must be a list"):
+        KnarrConfig.from_dict(bad, community_loader=lambda _: VALID_COMMUNITY)
+
+
+def test_parse_rejects_publisher_missing_required_field():
+    bad = {**VALID_INDEX, "publishers": [{"id": "x", "platform": "matrix"}]}
+    with pytest.raises(ConfigError, match="missing required field"):
+        KnarrConfig.from_dict(bad, community_loader=lambda _: VALID_COMMUNITY)
+
+
+def _publisher(**overrides):
+    base = dict(VALID_PUBLISHER)
+    base.update(overrides)
+    return {**VALID_INDEX, "publishers": [base]}
+
+
+def test_validate_rejects_publisher_with_bad_scope():
+    _expect_config_error(_publisher(scope="garbage/mtl"), "scope")
+
+
+def test_validate_rejects_publisher_without_an_adapter():
+    _expect_config_error(
+        _publisher(platform="facebook", surface="page-feed"),
+        "no publisher adapter for facebook/page-feed",
+    )
+
+
+def test_validate_rejects_duplicate_publisher_ids():
+    cfg = {**VALID_INDEX, "publishers": [VALID_PUBLISHER, VALID_PUBLISHER]}
+    _expect_config_error(cfg, "duplicate publisher id")
+
+
+def test_validate_rejects_publisher_credentials_ref_missing_key():
+    _expect_config_error(
+        _publisher(credentials_ref={"secret_name": "s"}),
+        "credentials_ref.secret_key",
+    )
+
+
+def test_validate_accepts_a_good_publisher():
+    parsed = KnarrConfig.from_dict(
+        _publisher(), community_loader=lambda _: VALID_COMMUNITY,
+    )
+    validate_config(parsed)  # must not raise
+
+
 def test_parse_instance_rejects_non_string_scope():
     """Non-string scope is caught at parse time, not at validate_config."""
     bad = {
@@ -664,6 +737,17 @@ def test_loads_real_test_config_with_instances():
     validate_config(parsed)  # must pass validation too
 
 
+def test_real_config_declares_the_phase_a_publishers():
+    """The shipped config must actually carry the destinations Phase A adds."""
+    config_path = _REPO_ROOT / "config" / "knarr.yaml"
+    if not config_path.exists():
+        pytest.skip(f"{config_path} not present in this checkout")
+    parsed = load_config(str(config_path))
+    ids = {p.id for p in parsed.publishers}
+    assert {"mtl-matrix", "mtl-discord"} <= ids
+    validate_config(parsed)
+
+
 def test_watcher_configmap_instances_match_the_source_config():
     """The K8s ConfigMap embeds a COPY of config/. Catch it drifting.
 
@@ -695,4 +779,10 @@ def test_watcher_configmap_instances_match_the_source_config():
         "k8s/watchers/reddit-github.yaml's embedded instances have drifted "
         "from config/knarr.yaml. Update the ConfigMap to match, or the "
         "watcher pod will run configuration nothing else validates."
+    )
+    # Publishers are mirrored too. The watcher pod does not publish, but
+    # load_config parses the whole file, so an un-mirrored block is still
+    # drift — and an unchecked copy is how the last one went stale.
+    assert embedded.get("publishers") == on_disk.get("publishers"), (
+        "the embedded publishers have drifted from config/knarr.yaml"
     )

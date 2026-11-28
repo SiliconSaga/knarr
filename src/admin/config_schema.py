@@ -143,6 +143,14 @@ _SUPPORTED_ADAPTERS = frozenset({
     ("github", "api"),
 })
 
+# (platform, surface) pairs that src/publisher has an adapter for. Phase A is
+# deliberately the two destinations we already run; Meta surfaces land in
+# Phase C, gated on developer-account verification.
+_SUPPORTED_PUBLISHERS = frozenset({
+    ("matrix", "room"),
+    ("discord", "channel"),
+})
+
 
 @dataclass
 class InstanceConfig:
@@ -193,12 +201,54 @@ class InstanceConfig:
 
 
 @dataclass
+class PublisherConfig:
+    """A single PublisherInstance: one (platform, surface, scope) destination.
+
+    The mirror of InstanceConfig. `surface` exists because a Facebook Page is
+    two destinations — a broadcast feed and a conversational inbox — that share
+    one credential but have different capabilities. Modelling them as one
+    entry is what made Facebook look uniformly difficult.
+    """
+    id: str
+    platform: str
+    surface: str
+    access_path: str
+    scope: str
+    target: str                          # room id/alias, channel id, page id
+    credentials_ref: dict | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict) -> PublisherConfig:
+        required = ("id", "platform", "surface", "access_path", "scope", "target")
+        for key in required:
+            if key not in data:
+                raise ConfigError(f"publisher is missing required field: {key}")
+        pid = data["id"]
+        return cls(
+            id=_require_str(pid, "publisher.id"),
+            platform=_require_str(data["platform"], f"publisher.{pid}.platform"),
+            surface=_require_str(data["surface"], f"publisher.{pid}.surface"),
+            access_path=_require_str(data["access_path"],
+                                     f"publisher.{pid}.access_path"),
+            scope=_require_str(data["scope"], f"publisher.{pid}.scope"),
+            target=_require_str(data["target"], f"publisher.{pid}.target"),
+            credentials_ref=(
+                _require_mapping(
+                    data["credentials_ref"],
+                    f"publisher.{pid}.credentials_ref")
+                if data.get("credentials_ref") is not None else None
+            ),
+        )
+
+
+@dataclass
 class KnarrConfig:
     server_name: str
     secrets: dict[str, str] = field(default_factory=dict)
     users: dict[str, str] = field(default_factory=dict)
     communities: list[CommunityConfig] = field(default_factory=list)
     instances: list[InstanceConfig] = field(default_factory=list)
+    publishers: list[PublisherConfig] = field(default_factory=list)
 
     @classmethod
     def from_dict(
@@ -225,12 +275,23 @@ class KnarrConfig:
         instances = [InstanceConfig.from_dict(_require_mapping(i, "instance"))
                      for i in instances_raw]
 
+        publishers_raw = data.get("publishers")
+        if publishers_raw is None:
+            publishers_raw = []
+        elif not isinstance(publishers_raw, list):
+            raise ConfigError(
+                f"publishers must be a list, got {type(publishers_raw).__name__}"
+            )
+        publishers = [PublisherConfig.from_dict(_require_mapping(p, "publisher"))
+                      for p in publishers_raw]
+
         return cls(
             server_name=data["server_name"],
             secrets=_require_mapping(data.get("secrets"), "secrets"),
             users=_require_mapping(data.get("users"), "users"),
             communities=communities,
             instances=instances,
+            publishers=publishers,
         )
 
 
@@ -441,6 +502,39 @@ def validate_config(config: KnarrConfig) -> None:
                     f"Instance '{inst.id}': credentials_ref.secret_key "
                     f"must be a string, got {type(secret_key).__name__}"
                 )
+
+    seen_publisher_ids: set[str] = set()
+    for pub in config.publishers:
+        # Duplicates are rejected outright: the fan-out resolves targets by id,
+        # so two entries sharing one would make which credential gets used a
+        # matter of dict ordering.
+        if pub.id in seen_publisher_ids:
+            errors.append(f"duplicate publisher id: {pub.id}")
+        seen_publisher_ids.add(pub.id)
+
+        if not any(pub.scope.startswith(p) for p in _VALID_SCOPE_PREFIXES):
+            errors.append(
+                f"Publisher '{pub.id}': scope '{pub.scope}' must start with "
+                f"one of {_VALID_SCOPE_PREFIXES}"
+            )
+
+        if (pub.platform, pub.surface) not in _SUPPORTED_PUBLISHERS:
+            supported = ", ".join(
+                f"{p}/{s}" for p, s in sorted(_SUPPORTED_PUBLISHERS)
+            )
+            errors.append(
+                f"Publisher '{pub.id}': no publisher adapter for "
+                f"{pub.platform}/{pub.surface} (supported: {supported})"
+            )
+
+        if pub.credentials_ref is not None:
+            for key in ("secret_name", "secret_key"):
+                value = pub.credentials_ref.get(key)
+                if not isinstance(value, str) or not value:
+                    errors.append(
+                        f"Publisher '{pub.id}': credentials_ref.{key} is "
+                        f"required and must be a non-empty string"
+                    )
 
     if errors:
         raise ConfigError("\n  - " + "\n  - ".join(errors))

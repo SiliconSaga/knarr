@@ -134,3 +134,41 @@ The startup line names every instance it built (`watcher started — 2 instance(
 This is a platform change, not a regression in this code, and the WatcherInstance model contains it correctly — the failure is isolated to that one instance, logged, and the process keeps polling everything else.
 
 Unblocking it means moving Reddit off `auth: anonymous` onto OAuth: register a Reddit app, obtain client credentials, and give the instance a `credentials_ref` the way the GitHub one already has. That is a real piece of Phase 2+ work, and it is exactly the platform-access decay the source-identity design was written to absorb.
+
+## Publishing (Phase A)
+
+One approved thing, several destinations, nothing reposted on a retry.
+
+```bash
+# See exactly what would go where — resolves, authorizes and validates for
+# real, then stops short of sending.
+python3 -m src.admin.cli publish \
+  --scope community/mtl \
+  --targets mtl-matrix,mtl-discord \
+  --body "Fall registration is open." \
+  --dry-run
+
+# Send it.
+python3 -m src.admin.cli publish \
+  --scope community/mtl \
+  --targets mtl-matrix,mtl-discord \
+  --body "Fall registration is open."
+```
+
+Re-running an identical command republishes nothing: `request_id` is derived from the scope, targets and content, and each target's result is recorded under it.
+
+**Exit code 2 means something was blocked or failed** — read the lines above the summary. A validation failure names the destination and the rule; a send failure names the destination and the platform's error. **Exit code 1 means authorization or config failed** and nothing was attempted at all.
+
+**Results live in `.knarr/publish-results.json`** by default (`--store` to override). Deleting that file makes the next run republish everything, because it is the only record of what already landed.
+
+**`--targets` names publisher ids, not platforms.** A target whose scope does not match `--scope` is refused, and refusal rejects the whole request rather than the one target. The scope check runs before any credential is read, and `--dry-run` needs no credentials at all. A dry run doesn't contact the homeserver, so a wrong room alias only shows up on the first real send.
+
+**Retries are safe; concurrent runs are not.** Delivery is at-least-once:
+- Each run logs in fresh, so Matrix's own transaction-id dedup doesn't carry across runs. A crash between the send and the record can produce one duplicate on the retry.
+- Two `knarr publish` runs of the same request at the same moment can both send.
+
+Run one publisher process at a time. The HTTP origin planned for scheduled callers closes both gaps.
+
+### What the Discord destination actually guarantees
+
+`mtl-discord` publishes through the mautrix-discord bridge, so **delivery is confirmed by Matrix, not by Discord**. A successful result means the bridge accepted the message. If the bridge is logged out, this reports success for something Discord never saw — check the bridge before trusting a Discord publish. The adapter docstring in `src/publisher/adapters/discord.py` lists the rest of what the bridge cannot express (no embeds, threads, DMs, edits or deletes).

@@ -63,6 +63,24 @@ data:
           secret_name: knarr-cred-community-terasology-gh-pat
           secret_key: GITHUB_TOKEN
 
+    # Mirrored from config/knarr.yaml. The watcher pod does not publish, but
+    # load_config parses the whole file — keeping the blocks identical is what
+    # the drift guard in tests/test_config_schema.py checks.
+    publishers:
+      - id: mtl-matrix
+        platform: matrix
+        surface: room
+        access_path: api
+        scope: community/mtl
+        target: "#social-watch:knarr.local"
+
+      - id: mtl-discord
+        platform: discord
+        surface: channel
+        access_path: bridge
+        scope: community/mtl
+        target: "#bridge-test:knarr.local"
+
   # Carried alongside under the same /etc/knarr/ mount so load_config()'s
   # community_loader resolves `test.yaml` relative to knarr.yaml's directory.
   test.yaml: |
