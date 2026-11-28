@@ -1,0 +1,19 @@
+community: owner
+display_name: "Owner"
+
+# The owner's personal rooms. Messages reach them only through publishers
+# scoped user/cervator (see docs/plans/2026-11-27-knarr-owner-notify-design.md).
+
+spaces:
+  owner:
+    name: "Cervator"
+    visibility: private
+    members: [admin, knarr, cervator]
+
+    rooms:
+      cervator-inbox:
+        alias: cervator-inbox
+        name: "#cervator-inbox"
+        topic: "Owner notifications: hit list, review queue, urgent items, failed runs"
+        # knarr is the account that sends; cervator reads.
+        members: [admin, knarr, cervator]
