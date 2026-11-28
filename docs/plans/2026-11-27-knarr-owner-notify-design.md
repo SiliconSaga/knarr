@@ -29,7 +29,7 @@ The PKM v2 design splits personal organizing three ways: the workflow lives in t
 ## Idempotency
 
 - Phase A skips an identical request as a retry once the first success is recorded (`derive_request_id` over publisher, verb, parent and content). Delivery is at-least-once: if the send succeeds and the result write fails, the CLI exits 2 with a warning, and a retry sends again.
-- The HTTP origin closes that gap by sending with a Matrix transaction id derived from the request id and publisher, so the homeserver drops a resent duplicate even when no record was written. Matrix scopes transaction ids to the sending device, so this holds only while retries use the same login; after a re-login or a token change, delivery is at-least-once again.
+- The HTTP origin closes that gap by sending with a Matrix transaction id derived from the request id, the publisher, and the target's verb and parent (the same identity `derive_request_id` uses), so the homeserver drops a resent duplicate even when no record was written. Matrix scopes transaction ids to the sending device, so this holds only while retries use the same login; after a re-login or a token change, delivery is at-least-once again.
 - The HTTP origin adds an explicit `idempotency_key` field. When present it replaces the derived id, so a caller can retry a changed rendering of the same item without a duplicate.
 - Until then, callers put the date, ISO week or item id in the text, so a new day's hit list is a new request and a retried one is not.
 
